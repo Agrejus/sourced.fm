@@ -150,8 +150,10 @@ submitted → sourced → scripted → verified → synthesizing → ready
   then persist the new status. Concurrency 1 across the whole pipeline —
   one episode on the GPU at a time, and the loop stays trivial.
 - Crash safety: statuses persist per stage; on boot the worker just resumes
-  from whatever statuses it finds. An episode stuck in `synthesizing` resumes
-  segment-by-segment (below).
+  from whatever statuses it finds. An episode stuck in `synthesizing` (crash
+  mid-render) is reset to `verified` and re-rendered from scratch — GPU time
+  is free, so the local path has no resume machinery (segment-level resume
+  exists only on the paid elevenlabs fallback path, below).
 - Retries: `attempts` + `next_attempt_at` columns, exponential backoff, max 5 →
   `failed` with `{stage, message}`. Resubmitting a URL always creates a fresh
   episode; there are no in-place retry semantics to maintain.
@@ -224,7 +226,7 @@ episodes(id TEXT PK,            -- uuid v7
          title, status, error_json,
          dossier_json,          -- Dossier: {markdown, title, sources[]}
          script_json,           -- {segments:[{idx, speaker, text, startMs?}]}
-         factcheck_json,        -- {claims:[{claim, verdict, sourceUrl?}]} — the audit trail
+         factcheck_json,        -- {claims:[{segmentIdx, claim, verdict, note, sourceUrl?}]} — the audit trail (shape in implementation.md §3.1b)
          audio_path, duration_ms,
          attempts INT DEFAULT 0, next_attempt_at,
          created_at, updated_at)
@@ -259,10 +261,12 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   the dialogue itself — "the article claims…", "this isn't well established…").
 - The revised script re-validates against the script schema; the claim table
   persists as `factcheck_json` and renders on the episode page.
-- **Exactly one revision round.** No verify-revise loops — a script that still
-  fails after revision fails the episode with the claim table as the error
-  detail. Bounded by design; a looping fact-checker burns tokens and never
-  converges.
+- **Exactly one revision round, and the revision is trusted.** The revised
+  script is schema-validated but NOT fact-checked again — no verify-revise
+  loops (a looping fact-checker burns tokens and never converges). The
+  fact-check stage therefore always ends in `verified` unless the call itself
+  errors (bad schema, revision required but missing), which fails through the
+  normal retry/attempts path with `{stage, message}` as the error.
 
 ### 2.6 Speech provider (Strategy — mirror of the fetcher seam)
 

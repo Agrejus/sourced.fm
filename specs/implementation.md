@@ -31,8 +31,8 @@ Read design.md first for intent; this file wins on any detail-level conflict.
 | Speech service name / container | `speech` (port **7910**, internal only) |
 | Firecrawl API base (internal) | `http://firecrawl-api:3002` |
 | Shared data mount (both learn + speech) | host `./data` → container `/data` |
-| SQLite file | `/data/learn.db` |
-| Episode audio | `/data/episodes/<episodeId>/audio.mp3` |
+| SQLite file | `${DATA_DIR}/learn.db` (default `/data/learn.db`) |
+| Episode audio | `${DATA_DIR}/episodes/<episodeId>/audio.mp3` — every path in this doc written as `/data/...` means `${DATA_DIR}/...`; both services must receive the same `DATA_DIR` |
 | Speaker enum | `"HOST"` \| `"EXPERT"` (exactly, uppercase) |
 | Episode statuses | `submitted → sourced → scripted → verified → synthesizing → ready`, terminal `failed` |
 | Source kinds | `"article"` \| `"tweet"` \| `"topic"` |
@@ -109,9 +109,18 @@ Before writing the wrapper, **read the pinned upstream README**
 - Input is the full script as text with per-line speaker labels
   (`Speaker 1: ...` / `Speaker 2: ...`). Map `HOST → Speaker 1`,
   `EXPERT → Speaker 2` in one function `to_vibevoice_script(segments)`.
-- It conditions on **voice prompt wav files** — ship two chosen voices from
-  the upstream demo voices into `speech/voices/host.wav` and
-  `speech/voices/expert.wav`; these files are part of the repo, not env config.
+- It conditions on **voice prompt wav files** — ship two voices from the
+  upstream demo voices into `speech/voices/host.wav` (pick a female demo
+  voice) and `speech/voices/expert.wav` (pick a male demo voice); these files
+  are part of the repo, not env config. Record WHICH upstream files you chose
+  in a comment in `speech/models.py` and get the M1 mp3 quality check
+  approved before proceeding. Kokoro answer voice: a male voice matching
+  EXPERT's register (start with `am_michael`; **VERIFY** the id against the
+  installed Kokoro voice list) — the answer must sound like the same person
+  as EXPERT.
+- Audio params: treat each model's native output as authoritative (both are
+  ~24 kHz mono); never resample between VibeVoice and whisper alignment. The
+  ffmpeg mp3 conversion is the only format change, and it happens last.
 - **Turing constraints (2080 Ti): `torch_dtype=torch.float16` (the repo
   defaults to bfloat16 — Turing has no bf16) and `attn_implementation="sdpa"`
   (FlashAttention 2 does not support Turing).** If the upstream loader doesn't
@@ -189,11 +198,19 @@ export interface SourceFetcher { kind: SourceInput["kind"]; fetch(input: SourceI
 **Input classification** (frozen, `classifyInput(text: string): SourceInput`;
 lives in one function with unit tests):
 
-1. Trim. If it parses as a URL (`new URL(...)` after prepending `https://`
-   when the string starts with a bare hostname): hosts `x.com`, `twitter.com`,
-   `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com` (any subdomain) →
-   `tweet`; any other URL → `article`.
-2. Otherwise → `topic`. Reject only: empty, > 500 chars.
+1. Trim. It is a URL **iff** it starts with `http://` or `https://`
+   (case-insensitive), OR it starts with `www.` and contains no whitespace
+   (prepend `https://`). **Nothing else is ever a URL** — "AI", "Node.js",
+   "kubernetes.io the website" are topics; a scheme-less deep link the user
+   really meant as a URL must be pasted with its scheme. This rule is
+   deliberately dumb so it is deterministic.
+2. If URL: hostname (lowercased) equal to or ending in `.x.com`,
+   `twitter.com`, `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com` —
+   plus bare `x.com` — → `tweet`; any other URL → `article`.
+3. Otherwise → `topic`. Reject only: empty, > 500 chars.
+4. Required unit cases: `"AI"`→topic, `"Node.js"`→topic,
+   `"https://x.com/u/status/123"`→tweet, `"www.example.com/post"`→article,
+   `"check out https://foo.com"`→topic (leading text = not a URL).
 
 **`firecrawl.ts` (article):** `POST ${config.firecrawlApiUrl}/v2/scrape`,
 headers `Authorization: Bearer ${config.firecrawlApiKey}`, body
@@ -320,6 +337,18 @@ never gets tools, web access, or extra context (design.md §2.11). Stamp `idx`
 (array order) onto segments before storing. Store as `script_json`. Do not
 post-process the text (no markdown stripping — the prompt forbids markdown).
 
+**Title rule (frozen):** the `source` stage writes `episodes.title` from
+`dossier.title`; the `script` stage overwrites it with the script's `title`.
+The script title wins — it's written for listeners.
+
+**M3 pre-flight (do before writing the stages):** create
+`server/scripts/anthropic-smoke.ts` making ONE `messages.parse` call with a
+trivial 2-field zod schema and `thinking: {type: "adaptive"}`, run it, and
+keep it checked in. The SDK snippets in this file are believed-current but
+are upstream-volatile — if the smoke call fails on any surface detail
+(import path, `output_config`, `parsed_output`), rule 2 applies: fix the
+spec's snippets first, then implement.
+
 ### 3.1b Fact-check stage (`server/src/pipeline/factcheck.ts`)
 
 One structured-output call; for `topic` episodes it ALSO gets the web search
@@ -356,15 +385,16 @@ const response = await client.messages.parse({
 });
 ```
 
-Stage logic (frozen):
-1. All verdicts `supported` → status `verified`, script unchanged.
-2. Any other verdict → `revisedSegments` must be present (missing = stage
-   error → retry); replace `script_json` segments with the revision
-   (re-stamp `idx`), store the claim table as `factcheck_json`, status
-   `verified`. **Do not re-run fact-check on the revision** — one round,
-   by design (design.md §2.5b).
-3. `factcheck_json` is stored in BOTH cases (the all-supported table is the
-   positive audit trail).
+Stage logic (frozen — this stage NEVER moves an episode to `failed` on its
+own; only the worker's attempts-exhausted path does):
+1. All verdicts `supported` → status `verified`, script unchanged. If the
+   model returned `revisedSegments` anyway, IGNORE them.
+2. Any verdict not `supported` → `revisedSegments` must be present (missing
+   ⇒ throw = stage error → worker retry/backoff); replace `script_json`
+   segments with the revision (re-stamp `idx`), status `verified`.
+   **The revision is trusted — do not fact-check it again.** One round.
+3. `factcheck_json` (the claim table) is stored in BOTH cases — the
+   all-supported table is the positive audit trail.
 
 ### 3.2 Ask endpoints (`server/src/api/ask.ts`)
 
@@ -396,6 +426,31 @@ Persist both turns to `chats` (with `position_ms` on the user turn). Answer
 must come back as plain spoken prose (the Appendix B rules say no markdown,
 ≤ 120 words) because it goes straight to TTS.
 
+Helper contracts (frozen; all live in `server/src/api/ask.ts` except noted):
+
+- `mmss(positionMs: number): string` — zero-padded `m:ss` (`754000` →
+  `"12:34"`; hours roll into minutes, `"75:10"` is fine).
+- `groundingBlock(episode): string` — exactly this template:
+  ```
+  ## Sources
+  <one "- <title>: <url>" line per dossier.sources entry>
+
+  ## Source dossier
+  <dossier.markdown>
+
+  ## Episode transcript
+  <one "[m:ss] SPEAKER: text" line per script segment, using startMs>
+
+  ## Answer rules
+  <Appendix B answer rules, verbatim>
+  ```
+- `lastNChatTurns(episodeId, n): MessageParam[]` — the last `n` chats rows
+  ordered oldest→newest mapped 1:1 to `{role, content: text}`; if the oldest
+  included row is an `assistant` turn, drop it (history must start with
+  `user`).
+- `beep()` (PWA, `app/src/audio.ts`) — a 150 ms 880 Hz sine via WebAudio
+  `OscillatorNode`; no audio asset file.
+
 **DONE-gate:** integration test with a fixture article produces a valid script
 (schema passes, 6–60 segments, both speakers present); fact-check on that
 script returns ≥ 1 claim and reaches `verified`; a poisoned-script test (a
@@ -416,7 +471,7 @@ writes 2 chat rows; second ask-text call shows
 | `GET /api/healthz` | — | `{"ok":true}` |
 | `POST /api/episodes` | JSON `{input: "<url or topic text>"}` **or** raw `text/plain` body (iOS Shortcut); server runs `classifyInput` (§2.2) | `201 {id, status:"submitted", source:{kind,...}}`; rejected input → `400 {error}` |
 | `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,createdAt}]` newest first |
-| `GET /api/episodes/:id` | — | full episode incl. `source`, `dossier.sources`, `factcheck.claims`, `script.segments[].startMs`, `error` (never `dossier.markdown` in the list route — it's big) |
+| `GET /api/episodes/:id` | — | full episode incl. `source`, `dossier.sources`, `factcheck.claims`, `script.segments[].startMs`, `error`. **`dossier.markdown` is NEVER returned by any route** — it is server-side grounding material only; clients get `dossier.sources` |
 | `GET /api/episodes/:id/audio` | supports `Range` | `200`/`206 audio/mpeg`, `Accept-Ranges: bytes` |
 | `GET /api/episodes/:id/chats` | — | `[{role,text,positionMs,createdAt}]` |
 | `POST .../ask`, `POST .../ask-text` | see M3 | see M3 |
