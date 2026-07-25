@@ -360,13 +360,19 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
     box runs SELinux enforcing; without it the container is denied
     `/dev/nvidia*`). Named volume for model weights. **No published ports** —
     only `learn` reaches it.
-  - `firecrawl-api`, `firecrawl-worker`, `firecrawl-redis`,
-    `firecrawl-playwright` — pinned upstream Firecrawl images (mirror the
-    ports/env of Firecrawl's own self-host compose; pin tags, don't track
-    `latest`). **No published ports** — only `learn` may reach them, on the
-    compose network. `shm_size: 1gb` on the playwright service (Chromium
-    /dev/shm crashes without it). `TEST_API_KEY`/bearer set even though it's
-    internal-only (defense in depth on a shared box).
+  - **Self-hosted Firecrawl (v2.11.0 topology, VERIFIED 2026-07-25).** The
+    upstream self-host stack is now five services, not four:
+    `firecrawl-api` (the harness that also runs the workers),
+    `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres` (the queue
+    backend moved to Postgres/RabbitMQ). We pull the upstream **ghcr images
+    pinned by digest** (`ghcr.io/firecrawl/{firecrawl,playwright-service,nuq-postgres}`;
+    redis/rabbitmq are stock) — do not build from source, do not track
+    `latest`. Deltas from upstream's compose: remove ALL published `ports:`,
+    add `shm_size: "1gb"` on playwright (Chromium /dev/shm), and
+    `USE_DB_AUTHENTICATION=false` (self-host has no bearer; learn still sends
+    its `FIRECRAWL_API_KEY` header, ignored server-side). The optional
+    FoundationDB backend is omitted (Postgres backend is the default). **No
+    published ports** — only `learn` reaches them on the compose network.
 - One-time box setup for rootless GPU containers: install
   `nvidia-container-toolkit` and generate the CDI spec
   (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`); verify with

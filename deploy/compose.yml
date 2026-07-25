@@ -1,0 +1,137 @@
+# podcast-learning deploy stack (rootless podman on the Fedora box).
+#
+# Firecrawl services mirror firecrawl/firecrawl @ v2.11.0 docker-compose.yaml
+# (VERIFIED 2026-07-25), pulled as ghcr images pinned by digest. Our deltas vs
+# upstream: no published ports on any firecrawl service; shm_size on playwright;
+# USE_DB_AUTHENTICATION=false; FoundationDB services omitted (default Postgres
+# queue backend). Secrets come from ../.env (see deploy/README.md).
+name: learn
+
+networks:
+  learnnet:
+    driver: bridge
+
+volumes:
+  learn-models:
+
+services:
+  learn:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    # Run as container-root so rootless podman maps it to the host user and can
+    # write the bind-mounted ./data (the oven/bun image otherwise runs as the
+    # non-root `bun` uid, which maps to a subuid that can't write host files).
+    user: "0"
+    ports:
+      - "7900:7900"
+    env_file:
+      - ../.env
+    environment:
+      DATA_DIR: /data
+      FIRECRAWL_API_URL: http://firecrawl-api:3002
+      SPEECH_URL: http://speech:7910
+      SPEECH_PROVIDER: local
+    volumes:
+      # :z relabels the host dir for SELinux (shared — speech mounts it too);
+      # learn has no label=disable, so without this it is denied write access.
+      - ../data:/data:z
+    depends_on:
+      - firecrawl-api
+      - speech
+    networks:
+      - learnnet
+
+  speech:
+    build:
+      context: ../speech
+    restart: unless-stopped
+    # GPU via CDI. SELinux (Silverblue, enforcing) denies /dev/nvidia* without
+    # label:disable (device nodes are already 0666). See deploy/README.md.
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+    environment:
+      DATA_DIR: /data
+      HF_HOME: /models
+    volumes:
+      - ../data:/data
+      - learn-models:/models
+    networks:
+      - learnnet
+
+  # ---- self-hosted Firecrawl v2.11.0 (internal only, no published ports) ----
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service@sha256:8c50add7293201e575110e6c7489fa383a9dfc46f168936526a458e06ffc5c28
+    restart: unless-stopped
+    shm_size: "1gb" # Chromium /dev/shm
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: 10
+    networks:
+      - learnnet
+
+  firecrawl-api:
+    image: ghcr.io/firecrawl/firecrawl@sha256:9a7d66ba9471188f148494aaefef52c6271e07b95b75f28e60c375cc63d1b350
+    restart: unless-stopped
+    command: node dist/src/harness.js --start-docker
+    environment:
+      HOST: "0.0.0.0"
+      PORT: 3002
+      EXTRACT_WORKER_PORT: 3004
+      WORKER_PORT: 3005
+      REDIS_URL: redis://redis:6379
+      REDIS_RATE_LIMIT_URL: redis://redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: nuq-postgres
+      POSTGRES_PORT: 5432
+      USE_DB_AUTHENTICATION: "false"
+      NUM_WORKERS_PER_QUEUE: 8
+      ENV: local
+    depends_on:
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      nuq-postgres:
+        condition: service_started
+    networks:
+      - learnnet
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --bind 0.0.0.0
+    networks:
+      - learnnet
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - learnnet
+
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres@sha256:aed86f62858f29bd971abddcdeb301c12888098d2cf5d33c1ba42b053bc460f6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    networks:
+      - learnnet

@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { config } from "../config";
 import type { Segment } from "../domain";
@@ -14,24 +15,48 @@ export const localSpeech: SpeechProvider = {
     episodeId: string,
     segments: Pick<Segment, "idx" | "speaker" | "text">[],
   ): Promise<EpisodeAudio> {
-    const resp = await fetch(`${config.speechUrl}/tts/episode`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ episodeId, segments }),
+    // A full episode render holds the connection idle for minutes. Bun's fetch
+    // enforces an internal ~5-min timeout that neither the `timeout` option nor
+    // an AbortSignal reliably overrides (VERIFIED 2026-07-25), so it would abort
+    // mid-render and roll the stage back while the GPU keeps working. node:http
+    // has no default request timeout — rely on the service's own failure
+    // responses (design §2.2).
+    const url = new URL(`${config.speechUrl}/tts/episode`);
+    const payload = JSON.stringify({ episodeId, segments });
+    const { status, body } = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+        },
+        (res) => {
+          let data = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => (data += chunk));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+        },
+      );
+      req.on("error", reject);
+      req.write(payload);
+      req.end();
     });
-    const body = (await resp.json()) as {
-      audioFile?: string;
-      durationMs?: number;
-      segmentStartMs?: number[];
-      error?: string;
-    };
-    if (!resp.ok || !body.audioFile) {
-      throw new SpeechError(body.error || `tts/episode HTTP ${resp.status}`);
+
+    let parsed: { audioFile?: string; durationMs?: number; segmentStartMs?: number[]; error?: string };
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new SpeechError(`tts/episode bad response (HTTP ${status}): ${body.slice(0, 200)}`);
+    }
+    if (status < 200 || status >= 300 || !parsed.audioFile) {
+      throw new SpeechError(parsed.error || `tts/episode HTTP ${status}`);
     }
     return {
-      audioPath: join(config.dataDir, "episodes", episodeId, body.audioFile),
-      durationMs: body.durationMs ?? 0,
-      segmentStartMs: body.segmentStartMs ?? [],
+      audioPath: join(config.dataDir, "episodes", episodeId, parsed.audioFile),
+      durationMs: parsed.durationMs ?? 0,
+      segmentStartMs: parsed.segmentStartMs ?? [],
     };
   },
 

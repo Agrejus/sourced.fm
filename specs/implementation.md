@@ -552,13 +552,19 @@ Range curl check passes. Real-iPhone voice testing lands in M6.
 
 ## M5 — Compose + Firecrawl + deploy
 
-- `deploy/compose.yml`: services `learn`, `speech`, `firecrawl-api`,
-  `firecrawl-worker`, `firecrawl-redis`, `firecrawl-playwright`.
-  **Copy the service definitions from Firecrawl's own self-host
-  `docker-compose.yaml` at a pinned release tag** (record the tag in a comment)
-  — do not invent image names or env; then apply our deltas: remove ALL
-  `ports:` from firecrawl services, `shm_size: "1gb"` on playwright,
-  set the self-host auth key from `.env`.
+- `deploy/compose.yml`: services `learn`, `speech`, and self-hosted Firecrawl
+  **v2.11.0** (VERIFIED 2026-07-25 against `firecrawl/firecrawl@v2.11.0`
+  `docker-compose.yaml`): `firecrawl-api` (harness + workers), `playwright-service`,
+  `redis`, `rabbitmq`, `nuq-postgres`. Copy the service definitions/env from
+  upstream — do not invent names/env. Pull the ghcr images **pinned by digest**
+  (captured 2026-07-25):
+  - `ghcr.io/firecrawl/firecrawl@sha256:9a7d66ba9471188f148494aaefef52c6271e07b95b75f28e60c375cc63d1b350`
+  - `ghcr.io/firecrawl/playwright-service@sha256:8c50add7293201e575110e6c7489fa383a9dfc46f168936526a458e06ffc5c28`
+  - `ghcr.io/firecrawl/nuq-postgres@sha256:aed86f62858f29bd971abddcdeb301c12888098d2cf5d33c1ba42b053bc460f6`
+  (`redis:alpine`, `rabbitmq:3-management` are stock). Deltas: remove ALL
+  `ports:` from firecrawl services; `shm_size: "1gb"` on playwright;
+  `USE_DB_AUTHENTICATION=false`; omit the optional FoundationDB services (use
+  the default Postgres backend, `NUQ_BACKEND` unset).
 - `learn`: build from `server/Dockerfile` (bun image + ffmpeg + `app/dist`
   copied in), `ports: ["7900:7900"]`, mounts `./data:/data`.
 - `speech`: `devices: ["nvidia.com/gpu=all"]`, mounts `./data:/data` +

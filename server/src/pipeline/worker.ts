@@ -40,6 +40,7 @@ export function createWorker(deps: WorkerDeps) {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       const attempts = ep.attempts + 1;
+      deps.onError?.(`stage ${stage.name} failed for ${ep.id} (attempt ${attempts}): ${message}`);
       if (attempts > MAX_ATTEMPTS) {
         deps.failEpisode(ep.id, stage.name, message, now());
       } else {
