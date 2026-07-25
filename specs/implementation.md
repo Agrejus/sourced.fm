@@ -40,8 +40,8 @@ Read design.md first for intent; this file wins on any detail-level conflict.
 | Web search tool (topic research + topic fact-check) | `{ type: "web_search_20260209", name: "web_search" }` |
 | Tweet resolver | `https://api.fxtwitter.com` (**VERIFY**, §2.2) |
 | Whisper model | `distil-small.en` (faster-whisper) |
-| Episode TTS model | `microsoft/VibeVoice-1.5B` |
-| Answer TTS model | Kokoro-82M (`hexgrad/Kokoro-82M`) |
+| Episode TTS model | weights `microsoft/VibeVoice-1.5B` (HF); inference code from community fork `vibevoice-community/VibeVoice` pinned at `07cb79feadd2d3fd7f47530d4c964a12857936a0`. Microsoft removed the official VibeVoice-TTS code and disabled its usage docs on 2025-09-05 (VERIFIED 2026-07-25); the HF weights remain and the fork preserves the loader. |
+| Answer TTS model | Kokoro-82M (`hexgrad/Kokoro-82M`), voice `am_michael` (VERIFIED present in the Kokoro voice list 2026-07-25) |
 
 ---
 
@@ -96,36 +96,55 @@ returns `500 {"error": "<message>"}`; the caller retries via the pipeline.
 
 - Load **once at boot, keep resident**: faster-whisper `distil-small.en`
   (`device="cuda", compute_type="float16"`), Kokoro.
-- **VibeVoice loads inside the `/tts/episode` handler and is released before
-  returning** (`del model; torch.cuda.empty_cache()`), in a `finally` block.
+- **VibeVoice is loaded and released per `/tts/episode` call, and must not be
+  resident between renders.** VERIFIED 2026-07-25: in-process `del model;
+  torch.cuda.empty_cache()` does NOT free it — loading with accelerate
+  `device_map="cuda"` keeps ~5.6GB alive after the handler returns (nvidia-smi
+  stayed at ~6.7GB). So the render runs in a **throwaway subprocess**
+  (`vibevoice_render.py`); process exit returns all GPU memory to the driver
+  unconditionally, and VRAM drops back to the resident baseline. The service
+  process keeps only whisper + Kokoro; it never imports VibeVoice.
 - One global `asyncio.Lock` around the whole `/tts/episode` handler.
 
-### 1.3 VibeVoice specifics (verify against upstream, then freeze your wrapper)
+### 1.3 VibeVoice specifics (VERIFIED against the community fork 2026-07-25, wrapper frozen)
 
-Before writing the wrapper, **read the pinned upstream README**
-(`github.com/microsoft/VibeVoice`, pin the commit hash you used in
-`speech/requirements.txt` comments). Known facts to build around — verify each:
+Source of truth is the community fork `vibevoice-community/VibeVoice`
+(`demo/inference_from_file.py`) at the pinned commit above — the official
+Microsoft repo removed the TTS code. `requirements.txt` installs the fork at
+that SHA and pins `transformers==4.51.3` (the fork develops against it and
+warns later versions may break). Verified contract the wrapper is built on:
 
-- Input is the full script as text with per-line speaker labels
-  (`Speaker 1: ...` / `Speaker 2: ...`). Map `HOST → Speaker 1`,
-  `EXPERT → Speaker 2` in one function `to_vibevoice_script(segments)`.
-- It conditions on **voice prompt wav files** — ship two voices from the
-  upstream demo voices into `speech/voices/host.wav` (pick a female demo
-  voice) and `speech/voices/expert.wav` (pick a male demo voice); these files
-  are part of the repo, not env config. Record WHICH upstream files you chose
-  in a comment in `speech/models.py` and get the M1 mp3 quality check
-  approved before proceeding. Kokoro answer voice: a male voice matching
-  EXPERT's register (start with `am_michael`; **VERIFY** the id against the
-  installed Kokoro voice list) — the answer must sound like the same person
-  as EXPERT.
-- Audio params: treat each model's native output as authoritative (both are
-  ~24 kHz mono); never resample between VibeVoice and whisper alignment. The
-  ffmpeg mp3 conversion is the only format change, and it happens last.
-- **Turing constraints (2080 Ti): `torch_dtype=torch.float16` (the repo
-  defaults to bfloat16 — Turing has no bf16) and `attn_implementation="sdpa"`
-  (FlashAttention 2 does not support Turing).** If the upstream loader doesn't
-  expose these, patch at load time; do not skip.
-- Output is a wav; convert to mp3 with ffmpeg
+- **Classes:**
+  `from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference`
+  and `from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor`.
+- **Load (Turing overrides applied):**
+  `VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, torch_dtype=torch.float16, device_map="cuda", attn_implementation="sdpa")`
+  then `model.eval()` and `model.set_ddpm_inference_steps(num_steps=10)`. The
+  fork's CUDA path defaults to `bfloat16` + `flash_attention_2`; both are
+  wrong for a 2080 Ti (Turing has no bf16; FA2 has no Turing kernels), so we
+  pass `float16` + `sdpa` explicitly. `model_path` is `microsoft/VibeVoice-1.5B`.
+- **Script input:** one text blob, per-line speaker labels
+  `Speaker 1: ...` / `Speaker 2: ...` (1-indexed; the fork's parser is
+  `^Speaker\s+(\d+):`). Map `HOST → Speaker 1`, `EXPERT → Speaker 2` in one
+  function `to_vibevoice_script(segments)`.
+- **Voice prompt wavs:** the processor conditions on one reference wav per
+  unique speaker, in first-appearance order. Ship two fork demo voices into
+  the repo: `speech/voices/host.wav` (= fork `demo/voices/en-Alice_woman.wav`,
+  female) and `speech/voices/expert.wav` (= fork `demo/voices/en-Frank_man.wav`,
+  male). These files are part of the repo, not env config; the chosen upstream
+  filenames are recorded in a comment in `speech/models.py`. Get the M1 mp3
+  quality check approved before proceeding. Kokoro answer voice: `am_michael`
+  (American male, matches EXPERT's register) — the answer must sound like the
+  same person as EXPERT.
+- **Processor + generate:**
+  `processor(text=[script], voice_samples=[[host_wav, expert_wav...]], padding=True, return_tensors="pt", return_attention_mask=True)`,
+  move tensors to `cuda`, then
+  `model.generate(**inputs, max_new_tokens=None, cfg_scale=1.3, tokenizer=processor.tokenizer, generation_config={"do_sample": False}, is_prefill=True)`.
+- **Output:** `outputs.speech_outputs[0]` is a mono waveform tensor at
+  **24000 Hz**. Native output of every model here is ~24 kHz mono; never
+  resample between VibeVoice and whisper alignment. Save the wav with
+  `processor.save_audio(outputs.speech_outputs[0], output_path=...)`, then the
+  ffmpeg mp3 conversion is the only format change and happens last
   (`ffmpeg -i in.wav -codec:a libmp3lame -qscale:a 4 out.mp3`).
 
 ### 1.4 Timestamp alignment (frozen algorithm)
@@ -153,12 +172,26 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
   python3.11, pip deps from `requirements.txt` (pin every version), ffmpeg.
   Model weights go to a named volume via `HF_HOME=/models` (declare volume).
 - One-time on the box (document in `deploy/README.md`):
-  `sudo rpm-ostree install nvidia-container-toolkit` (Silverblue) or dnf
-  equivalent, reboot if needed, then
-  `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
-- **VERIFY on the box before writing any more code:**
-  `podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
-  must print the 2080 Ti. If this fails, fix CDI before proceeding.
+  `nvidia-container-toolkit` must be installed and a CDI spec generated. The
+  canonical (root) path is
+  `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`. **A host driver
+  upgrade invalidates the CDI spec** (it hardcodes driver-versioned lib paths),
+  so this must be re-run after driver updates.
+- **Rootless / no-sudo path (VERIFIED working 2026-07-25):** when `/etc/cdi`
+  cannot be written (no console/sudo), generate to the user dir and point
+  rootless podman at it — no root needed:
+  `nvidia-ctk cdi generate --output=$HOME/.config/cdi/nvidia.yaml`, plus
+  `~/.config/containers/containers.conf` with
+  `[engine]\ncdi_spec_dirs = ["$HOME/.config/cdi"]`.
+- **SELinux (Silverblue, enforcing):** rootless GPU containers are denied
+  access to `/dev/nvidia*` unless the container runs with
+  `--security-opt=label=disable` (podman) / `security_opt: ["label=disable"]`
+  (compose). The device nodes are already `0666`, so this is purely the
+  SELinux label. The `speech` service in `deploy/compose.yml` MUST set it.
+- **VERIFY on the box before writing any more code (DONE 2026-07-25):**
+  `podman run --rm --security-opt=label=disable --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
+  prints `NVIDIA GeForce RTX 2080 Ti` (driver 580.159.04, CUDA 13.0,
+  166MiB/11264MiB). If this fails, fix CDI before proceeding.
 
 **DONE-gate (run on the box):**
 1. `curl speech:7910/healthz` → `{"ok":true,"gpu":"NVIDIA GeForce RTX 2080 Ti"}`

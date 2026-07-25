@@ -356,8 +356,10 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - `deploy/compose.yml` services:
   - `learn` — the app, port `7900:7900`, `restart: unless-stopped`.
   - `speech` — Python/FastAPI GPU image (CUDA base). GPU via CDI:
-    `devices: [nvidia.com/gpu=all]`. Named volume for model weights. **No
-    published ports** — only `learn` reaches it.
+    `devices: [nvidia.com/gpu=all]` plus `security_opt: [label=disable]` (the
+    box runs SELinux enforcing; without it the container is denied
+    `/dev/nvidia*`). Named volume for model weights. **No published ports** —
+    only `learn` reaches it.
   - `firecrawl-api`, `firecrawl-worker`, `firecrawl-redis`,
     `firecrawl-playwright` — pinned upstream Firecrawl images (mirror the
     ports/env of Firecrawl's own self-host compose; pin tags, don't track
