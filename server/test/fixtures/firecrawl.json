@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "data": {
+    "markdown": "# The Quiet Revolution in Bridge Engineering\n\nFor most of the twentieth century, suspension bridges were designed against a single villain: the wind. The collapse of the Tacoma Narrows Bridge in 1940 taught engineers that a slender deck could be driven into destructive oscillation by a steady breeze, not just a storm. The phenomenon, aeroelastic flutter, turned a static structure into an unstable one.\n\nModern practice attacks the problem on three fronts. First, the deck cross-section is shaped in a wind tunnel so that air separates cleanly rather than forming the alternating vortices that push a structure back and forth. Second, tuned mass dampers are hung inside the towers and deck, heavy weights that swing out of phase with the bridge and bleed away energy. Third, active control systems now sense motion and adjust in real time.\n\nThe result is a generation of bridges that are longer, lighter, and calmer than anything the Tacoma engineers could have built. The Akashi Kaikyo Bridge in Japan spans nearly two kilometres between towers and rode out the Kobe earthquake during construction with only minor realignment. Engineers say the real lesson is humility: the wind will always find the weakness you did not test for.",
+    "metadata": {
+      "title": "The Quiet Revolution in Bridge Engineering",
+      "sourceURL": "https://example.com/bridge-engineering",
+      "statusCode": 200
+    }
+  }
+}

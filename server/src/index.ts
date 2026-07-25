@@ -1,16 +1,32 @@
 import { Hono } from "hono";
 import { config } from "./config";
-import { db } from "./db";
+import { accessors, db } from "./db";
+import { speech } from "./speech";
+import { productionStages } from "./pipeline/stages";
+import { createWorker } from "./pipeline/worker";
 
-// Boot order: config (already parsed at import — crashes here if env is bad),
-// then db (schema ensured at import), then http. The pipeline worker is wired
-// in once its stages exist.
+// Boot order: config (parsed at import — crashes here on bad env), db (schema
+// ensured at import), http, then the pipeline worker.
+void db;
+
 const app = new Hono();
-
 app.get("/api/healthz", (c) => c.json({ ok: true }));
 
-// Touch db so the schema is applied at boot even before any request.
-void db;
+const now = () => Date.now();
+
+// Crash recovery: re-render anything left mid-synthesis (§2.2).
+const reset = accessors.resetStuckSynthesizing(now());
+if (reset > 0) console.log(`reset ${reset} stuck synthesizing episode(s) to verified`);
+
+const worker = createWorker({
+  claimNext: accessors.claimNextPipelineEpisode,
+  scheduleRetry: accessors.scheduleRetry,
+  failEpisode: accessors.failEpisode,
+  stages: productionStages({ accessors, speech, now }),
+  now,
+  onError: (message) => console.error(`worker tick error: ${message}`),
+});
+worker.start();
 
 const server = Bun.serve({ port: config.port, fetch: app.fetch });
 console.log(`learn listening on http://localhost:${server.port}`);
