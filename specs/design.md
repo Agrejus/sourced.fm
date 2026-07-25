@@ -124,7 +124,7 @@ podcast-learning/
     src/
       api/           route handlers (episodes, ask, audio)
       pipeline/      stage functions + worker loop
-      fetchers/      ArticleFetcher interface + firecrawl.ts
+      fetchers/      SourceFetcher interface + firecrawl.ts, tweet.ts, research.ts
       speech/        SpeechProvider interface + local.ts (+ elevenlabs.ts only if enabled)
       db.ts          bun:sqlite schema + accessors
       config.ts      env parsing (parse once at boot, crash on missing)

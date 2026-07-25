@@ -1,7 +1,9 @@
 # podcast-learning
 
-Turn an article URL into an interactive two-host podcast you can listen to —
-and interrupt with spoken questions — on an iPhone.
+Turn an article URL, an X/Twitter link, or a bare topic into a fact-checked,
+interactive two-host podcast you can listen to — and interrupt with spoken
+questions — on an iPhone. Every episode is built from a cited source dossier
+and passes a claim-by-claim verification stage before any audio is rendered.
 
 Standalone system: one Bun service (API + PWA + pipeline worker), SQLite +
 on-disk audio, self-hosted Firecrawl for article ingestion, local GPU speech
