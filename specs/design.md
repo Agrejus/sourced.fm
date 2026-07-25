@@ -18,9 +18,10 @@ host voice, and resume playback.
 
 1. **Submit** — paste a URL in the PWA (or share-sheet it from iOS via a
    Shortcut). The episode is queued.
-2. **Scrape** — Firecrawl's scrape API renders the page (headless browser on
-   their side) and returns main-content markdown + title/byline metadata. One
-   HTTP call replaces a whole browser container.
+2. **Scrape** — a **self-hosted Firecrawl** instance (runs on the same box)
+   renders the page in its own headless browser and returns main-content
+   markdown + title/byline metadata. Same one-call API as the cloud product,
+   but free, private, and ours.
 3. **Script** — an LLM rewrites the article as a dialogue between two hosts:
    HOST (curious, asks the questions you would) and EXPERT (explains). Output is
    structured segments, not free text.
@@ -36,19 +37,22 @@ host voice, and resume playback.
 
 ### Shape of the system
 
-One service. A single Bun/TypeScript process serves the PWA, the API, and runs
-the pipeline worker in-process. SQLite holds episodes/chats/queue state; audio
-mp3s live on disk. It ships as one container to the Fedora box
-(`192.168.68.85`, rootless podman) and is fronted by `tailscale serve` for
-HTTPS. No message broker, no second database, no job runner — at personal
-volume (a few episodes a day) a worker loop over a SQLite table is the whole
-queue.
+One app service plus a scraping stack. A single Bun/TypeScript process serves
+the PWA, the API, and runs the pipeline worker in-process. SQLite holds
+episodes/chats/queue state; audio mp3s live on disk. Alongside it, the same
+compose file runs **self-hosted Firecrawl** (its API + worker + Redis +
+Playwright containers) — reachable only inside the compose network, never
+exposed on the LAN. Everything runs on the Fedora box (`192.168.68.85`,
+rootless podman) and the app is fronted by `tailscale serve` for HTTPS. No
+message broker or second database *for our app* — at personal volume a worker
+loop over a SQLite table is the whole queue (Firecrawl's internal Redis is its
+own business).
 
-External dependencies (all server-side, key'd via `.env` on the box):
+Dependencies (server-side; keys via `.env` on the box):
 
 | Dependency | Used for | Notes |
 |---|---|---|
-| Firecrawl API | URL → clean markdown + metadata | free tier ~500 scrapes, then cheap; swappable (see §2.3) |
+| Firecrawl (self-hosted) | URL → clean markdown + metadata | AGPL, free; 4 containers on the box; no cloud key. Cloud-only anti-bot ("fire-engine") is absent — hard-bot-walled sites may fail (see §2.3) |
 | LLM provider (Anthropic) | dialogue script + Q&A answers | |
 | ElevenLabs | TTS (episodes + answers) and STT (Scribe) | one key for both directions |
 
@@ -124,15 +128,20 @@ interface FetchedArticle {
 }
 ```
 
-- V1 implements **firecrawl only**: `POST https://api.firecrawl.dev/v2/scrape`
-  with `formats: ["markdown"]`, `onlyMainContent: true`. Validate at the
-  boundary: empty/near-empty markdown (< 500 chars) is a `FetchError`, not an
-  episode.
-- The interface exists because scraping is the most likely component to change
-  (Firecrawl pricing, paywalled sites → self-hosted Playwright). Nothing else
-  in the system may know which fetcher ran. Do NOT build the playwright fetcher
-  preemptively (YAGNI) — but if it comes, note Bun cannot drive Playwright's
-  WebSocket transport; it would be a sidecar or a Node subprocess.
+- V1 implements **firecrawl only**, pointed at the self-hosted instance:
+  `POST ${FIRECRAWL_API_URL}/v2/scrape` (`http://firecrawl-api:3002` inside the
+  compose network) with `formats: ["markdown"]`, `onlyMainContent: true`, and
+  the self-set bearer token. Validate at the boundary: empty/near-empty
+  markdown (< 500 chars) is a `FetchError`, not an episode.
+- Because `FIRECRAWL_API_URL` + key are plain env, the cloud API is a config
+  change, not a code change — the escape hatch if a bot-walled site defeats the
+  self-hosted engine (self-host lacks the cloud-only "fire-engine" anti-bot
+  layer).
+- The interface exists because scraping is the most likely component to change.
+  Nothing else in the system may know which fetcher ran. Do NOT build a bespoke
+  playwright fetcher preemptively (YAGNI) — but if it comes, note Bun cannot
+  drive Playwright's WebSocket transport; it would be a sidecar or a Node
+  subprocess.
 
 ### 2.4 Storage (bun:sqlite, WAL mode)
 
@@ -200,10 +209,18 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 
 ### 2.8 Deploy (Fedora box, rootless podman)
 
-- One image: Bun base + ffmpeg; `data/` bind-mounted for SQLite + audio.
-- `deploy/compose.yml`: single `learn` service, port `7900:7900`,
-  `restart: unless-stopped`.
-- Env (`.env` on the box, gitignored): `FIRECRAWL_API_KEY`,
+- App image: Bun base + ffmpeg; `data/` bind-mounted for SQLite + audio.
+- `deploy/compose.yml` services:
+  - `learn` — the app, port `7900:7900`, `restart: unless-stopped`.
+  - `firecrawl-api`, `firecrawl-worker`, `firecrawl-redis`,
+    `firecrawl-playwright` — pinned upstream Firecrawl images (mirror the
+    ports/env of Firecrawl's own self-host compose; pin tags, don't track
+    `latest`). **No published ports** — only `learn` may reach them, on the
+    compose network. `shm_size: 1gb` on the playwright service (Chromium
+    /dev/shm crashes without it). `TEST_API_KEY`/bearer set even though it's
+    internal-only (defense in depth on a shared box).
+- Env (`.env` on the box, gitignored): `FIRECRAWL_API_URL`
+  (`http://firecrawl-api:3002`), `FIRECRAWL_API_KEY` (self-set token),
   `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_HOST`,
   `ELEVENLABS_VOICE_EXPERT`, `PORT`.
 - Ship code like rust-runtime does: bare-push over SSH
@@ -220,6 +237,9 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - No third-party API key (Firecrawl/Anthropic/ElevenLabs) ever reaches the PWA —
   all external calls are server-side.
 - Nothing outside `fetchers/` knows which fetcher produced the article.
+- The Firecrawl containers are never reachable from outside the compose
+  network (no published ports, not on the tailnet) — a headless browser that
+  fetches arbitrary URLs is not something the LAN gets to talk to.
 - `audio.mp3` is immutable once status is `ready`.
 - Config is parsed once at boot; a missing required env var crashes the process
   at startup, not mid-episode.
