@@ -7,33 +7,65 @@ instead).
 
 ## Part 1: What this is (for humans)
 
-Give the system an article URL. It fetches the page as clean markdown
-(Firecrawl), rewrites it as a two-host dialogue, synthesizes it **locally on
-the box's RTX 2080 Ti** (VibeVoice), and publishes it as an episode you can
-play on your iPhone from anywhere (Tailscale). While you listen, you can
-interrupt — hold the mic button **or say the word "question"** — ask a question
-out loud, hear the answer spoken back, and resume playback. Audio in both
-directions is local and free; the only metered cost in the whole system is
-Anthropic tokens.
+Give the system **an article URL, an X/Twitter link, or just a topic**. It
+builds a cited source dossier, rewrites it as a two-host dialogue,
+**fact-checks the script against the sources before any audio exists**,
+synthesizes it locally on the box's RTX 2080 Ti (VibeVoice), and publishes it
+as an episode you can play on your iPhone from anywhere (Tailscale). While
+you listen, you can interrupt — hold the mic button **or say the word
+"question"** — ask a question out loud, hear the answer spoken back, and
+resume playback. Audio in both directions is local and free; the only metered
+cost in the whole system is Anthropic tokens.
+
+### Factual correctness is a pipeline property, not a prompt
+
+Three layers, because no single one is sufficient:
+
+1. **Grounding** — the script is written only from a *source dossier* (the
+   article, the full tweet thread + what it links to, or a web-researched
+   brief with citations). The prompt forbids inventing facts, but we don't
+   rely on that alone.
+2. **Verification** — before synthesis, a separate pass extracts every factual
+   claim from the script and checks each against the dossier (and live web
+   search for topic episodes). Unsupported claims are removed or explicitly
+   hedged in one bounded revision.
+3. **Traceability** — every episode page lists its sources, and the Q&A chat
+   answers from the same dossier, so you can always ask "where does that come
+   from?" mid-listen.
+
+Honest limit: this makes fabrications rare and catchable, not impossible — the
+dossier itself can contain a source's error. The sources list is the audit
+trail.
 
 ### The flow
 
-1. **Submit** — paste a URL in the PWA (or share-sheet it from iOS via a
-   Shortcut). The episode is queued.
-2. **Scrape** — a **self-hosted Firecrawl** instance (runs on the same box)
-   renders the page in its own headless browser and returns main-content
-   markdown + title/byline metadata. Same one-call API as the cloud product,
-   but free, private, and ours.
-3. **Script** — an LLM rewrites the article as a dialogue between two hosts:
+1. **Submit** — paste a URL, an X link, or type a topic in the PWA (or
+   share-sheet it from iOS via a Shortcut). The episode is queued.
+2. **Source** — build the dossier, by input type:
+   - *Article URL* → self-hosted **Firecrawl** (same box, own headless
+     browser) returns main-content markdown + metadata.
+   - *X/Twitter link* → tweet-resolver API returns the tweet, its full
+     same-author thread, and any quoted tweet; a linked article inside the
+     tweet is fetched via Firecrawl and appended. (X itself blocks scrapers —
+     we go through a resolver, not the page.)
+   - *Topic* → **research mode**: Claude with server-side web search gathers
+     current sources and writes a cited brief. The dossier is the brief plus
+     the source list.
+3. **Script** — an LLM rewrites the dossier as a dialogue between two hosts:
    HOST (curious, asks the questions you would) and EXPERT (explains). Output is
    structured segments, not free text.
-4. **Synthesize** — VibeVoice-1.5B renders the whole dialogue in one pass on
+4. **Fact-check** — a separate LLM pass lists the script's factual claims,
+   verifies each against the dossier (plus fresh web search for topic
+   episodes), and produces one revised script with unsupported claims cut or
+   hedged. Only a verified script reaches the GPU.
+5. **Synthesize** — VibeVoice-1.5B renders the whole dialogue in one pass on
    the GPU (that's what it's built for: stable voice identities and natural
    turn-taking across a full episode). faster-whisper then force-aligns the
    result to give every transcript segment a real timestamp.
-5. **Listen** — the PWA lists episodes and plays them. Media Session API so
-   lock-screen controls work; HTTP Range support so scrubbing works on iOS.
-6. **Interrupt** — wake word or hold-to-talk pauses playback, records your
+6. **Listen** — the PWA lists episodes (each with its sources) and plays
+   them. Media Session API so lock-screen controls work; HTTP Range support so
+   scrubbing works on iOS.
+7. **Interrupt** — wake word or hold-to-talk pauses playback, records your
    question, transcribes it (faster-whisper, local GPU), answers it with an LLM
    grounded on the article + transcript **+ where you are in the episode**,
    speaks the answer (Kokoro, local GPU — small, near-instant), and resumes.
@@ -57,7 +89,8 @@ Dependencies (server-side; keys via `.env` on the box):
 | Dependency | Used for | Notes |
 |---|---|---|
 | Firecrawl (self-hosted) | URL → clean markdown + metadata | AGPL, free; 4 containers on the box; no cloud key. Cloud-only anti-bot ("fire-engine") is absent — hard-bot-walled sites may fail (see §2.3) |
-| LLM provider (Anthropic) | dialogue script + Q&A answers | the only metered cost |
+| LLM provider (Anthropic) | topic research (server-side web search), dialogue script, fact-check pass, Q&A answers | the only metered cost |
+| Tweet-resolver API | X/Twitter link → tweet + thread JSON | X blocks scrapers; resolver choice pinned in implementation.md |
 | `speech` service (local GPU) | episode TTS (VibeVoice-1.5B), answer TTS (Kokoro-82M), STT + alignment (faster-whisper) | free; ~11GB VRAM budget, see §2.7 |
 | ElevenLabs (optional fallback) | episode/answer TTS if local quality disappoints | pure config swap behind the SpeechProvider seam (§2.6); no key needed unless enabled |
 
@@ -107,12 +140,13 @@ podcast-learning/
 Status machine on the episode row — the only source of truth:
 
 ```
-submitted → scraped → scripted → synthesizing → ready
-     └─────────┴─────────┴────────────┴────────→ failed
+submitted → sourced → scripted → verified → synthesizing → ready
+     └────────┴──────────┴──────────┴────────────┴────────→ failed
 ```
 
 - One worker loop: every tick, claim the oldest episode in a non-terminal,
-  non-`ready` status and run **one** stage (`scrape`, `script`, `synthesize`),
+  non-`ready` status and run **one** stage (`source`, `script`, `factcheck`,
+  `synthesize`),
   then persist the new status. Concurrency 1 across the whole pipeline —
   one episode on the GPU at a time, and the loop stays trivial.
 - Crash safety: statuses persist per stage; on boot the worker just resumes
@@ -134,42 +168,63 @@ submitted → scraped → scripted → synthesizing → ready
   → `startMs` → `audio.mp3` → delete seg files. This resume rule exists only
   because this path costs money per segment.
 
-### 2.3 Article fetching (Strategy — the one seam we pay for)
+### 2.3 Sourcing (Strategy — one seam, three fetchers, one output shape)
+
+Every input type resolves to the same **dossier**; nothing downstream knows
+which fetcher ran.
 
 ```ts
-interface ArticleFetcher {
-  id: "firecrawl" | "playwright";
-  fetch(url: string): Promise<Result<FetchedArticle, FetchError>>;
-}
-interface FetchedArticle {
-  markdown: string;            // main content only
+type SourceInput =
+  | { kind: "article"; url: string }
+  | { kind: "tweet"; url: string }
+  | { kind: "topic"; topic: string };
+
+interface Dossier {
+  markdown: string;                    // the material the script may use — nothing else
   title: string;
-  byline?: string; siteName?: string;
+  sources: { title: string; url: string }[];  // ≥ 1, shown on the episode page
+}
+
+interface SourceFetcher {
+  kind: SourceInput["kind"];
+  fetch(input: SourceInput): Promise<Result<Dossier, FetchError>>;
 }
 ```
 
-- V1 implements **firecrawl only**, pointed at the self-hosted instance:
-  `POST ${FIRECRAWL_API_URL}/v2/scrape` (`http://firecrawl-api:3002` inside the
-  compose network) with `formats: ["markdown"]`, `onlyMainContent: true`, and
-  the self-set bearer token. Validate at the boundary: empty/near-empty
-  markdown (< 500 chars) is a `FetchError`, not an episode.
-- Because `FIRECRAWL_API_URL` + key are plain env, the cloud API is a config
-  change, not a code change — the escape hatch if a bot-walled site defeats the
-  self-hosted engine (self-host lacks the cloud-only "fire-engine" anti-bot
-  layer).
-- The interface exists because scraping is the most likely component to change.
-  Nothing else in the system may know which fetcher ran. Do NOT build a bespoke
-  playwright fetcher preemptively (YAGNI) — but if it comes, note Bun cannot
-  drive Playwright's WebSocket transport; it would be a sidecar or a Node
-  subprocess.
+Input classification happens once at the submit boundary: body is a URL →
+`x.com`/`twitter.com` hosts are `tweet`, any other URL is `article`; a non-URL
+text body is `topic`.
+
+- **`article` (firecrawl)** — self-hosted instance:
+  `POST ${FIRECRAWL_API_URL}/v2/scrape` (`http://firecrawl-api:3002` inside
+  the compose network), `formats: ["markdown"]`, `onlyMainContent: true`,
+  self-set bearer token. Empty/near-empty markdown (< 500 chars) is a
+  `FetchError`, not an episode. `sources` = the article itself. Because
+  `FIRECRAWL_API_URL` + key are plain env, cloud Firecrawl is a config-only
+  escape hatch for bot-walled sites.
+- **`tweet`** — X blocks scrapers (Firecrawl self-host will not get through);
+  go through a tweet-resolver API instead of the page. The dossier is: the
+  tweet, its full same-author thread in order, any quoted tweet, and — when
+  the tweet links an article — that article fetched via the firecrawl fetcher
+  and appended under a `## Linked article` heading. `sources` = the tweet URL
+  (+ linked article URL). A bare opinion tweet with no substance still makes
+  an episode — the dossier honestly says it's one person's claim, and the
+  fact-check stage hedges accordingly.
+- **`topic` (research mode)** — one Claude call with the **server-side web
+  search tool**: research the topic, prefer primary/recent sources, and write
+  a structured brief where every claim carries its source. The dossier is the
+  brief; `sources` come from the tool's citations. A topic that turns up no
+  usable sources is a `FetchError`, not a made-up episode.
 
 ### 2.4 Storage (bun:sqlite, WAL mode)
 
 ```sql
 episodes(id TEXT PK,            -- uuid v7
-         url, title, status, error_json,
-         article_json,          -- {markdown, byline, siteName}
+         source_json,           -- SourceInput: {kind, url? , topic?}
+         title, status, error_json,
+         dossier_json,          -- Dossier: {markdown, title, sources[]}
          script_json,           -- {segments:[{idx, speaker, text, startMs?}]}
+         factcheck_json,        -- {claims:[{claim, verdict, sourceUrl?}]} — the audit trail
          audio_path, duration_ms,
          attempts INT DEFAULT 0, next_attempt_at,
          created_at, updated_at)
@@ -184,11 +239,30 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
 ### 2.5 Script generation contract
 
 - One LLM call (Claude, structured output): `{title, segments:[{speaker,text}]}`.
+  The user content is the **dossier markdown only** — the script may not draw
+  on anything else, and the prompt forbids inventing facts beyond it.
 - Target 10–15 min spoken (~1,500–2,200 words). HOST asks/reacts/summarizes;
-  EXPERT explains. First segment: HOST cold-opens on why the article matters.
+  EXPERT explains. First segment: HOST cold-opens on why this matters.
   Last segment: HOST recaps 3 takeaways.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
   > 60 segments → stage error (backoff retry covers model flakiness).
+
+### 2.5b Fact-check stage (scripted → verified)
+
+- One LLM call, structured output: given the dossier and the script, return
+  `{claims: [{claim, verdict: "supported" | "unsupported" | "distorted",
+  segmentIdx, note}], revisedSegments?}`. For `topic` episodes the call also
+  gets the web search tool to re-check time-sensitive claims.
+- If every claim is `supported`, the script passes unchanged. Otherwise the
+  same call returns the full revised script (unsupported claims removed,
+  distortions corrected, genuinely-uncertain statements explicitly hedged in
+  the dialogue itself — "the article claims…", "this isn't well established…").
+- The revised script re-validates against the script schema; the claim table
+  persists as `factcheck_json` and renders on the episode page.
+- **Exactly one revision round.** No verify-revise loops — a script that still
+  fails after revision fails the episode with the claim table as the error
+  detail. Bounded by design; a looping fact-checker burns tokens and never
+  converges.
 
 ### 2.6 Speech provider (Strategy — mirror of the fetcher seam)
 
@@ -236,9 +310,10 @@ FastAPI container owning every audio model; the Bun app is its only client.
 ```
 POST /api/episodes/:id/ask        multipart: audio (webm/mp4) + positionMs
   1. STT: SpeechProvider.transcribe (faster-whisper on the GPU) → question text
-  2. LLM: system prompt = article markdown + transcript segments up to
-     positionMs (marked "the listener has heard up to here") + last N chat
-     turns for this episode
+  2. LLM: system prompt = dossier markdown (with its sources list) +
+     transcript segments up to positionMs (marked "the listener has heard up
+     to here") + last N chat turns for this episode; answers cite which
+     source they lean on when asked
   3. TTS: SpeechProvider.synthesizeAnswer (Kokoro, streamed) → pipe audio
      straight to the response (never buffer the full answer server-side)
 POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
@@ -264,9 +339,12 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
   "listening" indicator; settings toggle to disable. Fallback only if Web
   Speech proves too flaky on iOS: Porcupine WASM custom keyword — do not build
   preemptively.
-- **Submission**: URL paste box; plus an iOS Shortcut POSTing the shared URL to
-  `POST /api/episodes` (accept a bare-URL text body so the Shortcut is one
-  action).
+- **Submission**: one text box accepting an article URL, an X link, or a
+  topic (classified server-side, §2.3); plus an iOS Shortcut POSTing the
+  shared URL/text to `POST /api/episodes` (accept a bare text body so the
+  Shortcut is one action).
+- **Episode page**: shows the sources list and the fact-check claim table —
+  the audit trail behind "factually correct".
 
 ### 2.10 Deploy (Fedora box, rootless podman)
 
@@ -310,6 +388,13 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - On the elevenlabs fallback path only: a retried synthesize never re-bills
   segments that already have files.
 - No stage writes a status backwards; assert expected prior status and drop.
+- The script stage sees ONLY the dossier — never raw web access, never model
+  memory presented as source material.
+- Nothing reaches the GPU (or the listener) without passing the fact-check
+  stage; there is no "skip verification" flag.
+- The fact-check stage runs exactly one revision round — never a loop.
+- A topic with no usable sources fails at sourcing; the system never
+  fabricates an episode from model memory alone.
 - No API key (Firecrawl/Anthropic/ElevenLabs-if-enabled) ever reaches the PWA —
   all external calls are server-side.
 - Nothing outside `fetchers/` knows which fetcher produced the article;

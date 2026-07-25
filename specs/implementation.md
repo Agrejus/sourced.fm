@@ -34,8 +34,11 @@ Read design.md first for intent; this file wins on any detail-level conflict.
 | SQLite file | `/data/learn.db` |
 | Episode audio | `/data/episodes/<episodeId>/audio.mp3` |
 | Speaker enum | `"HOST"` \| `"EXPERT"` (exactly, uppercase) |
-| Episode statuses | `submitted → scraped → scripted → synthesizing → ready`, terminal `failed` |
+| Episode statuses | `submitted → sourced → scripted → verified → synthesizing → ready`, terminal `failed` |
+| Source kinds | `"article"` \| `"tweet"` \| `"topic"` |
 | LLM model id | `claude-opus-4-8` |
+| Web search tool (topic research + topic fact-check) | `{ type: "web_search_20260209", name: "web_search" }` |
+| Tweet resolver | `https://api.fxtwitter.com` (**VERIFY**, §2.2) |
 | Whisper model | `distil-small.en` (faster-whisper) |
 | Episode TTS model | `microsoft/VibeVoice-1.5B` |
 | Answer TTS model | Kokoro-82M (`hexgrad/Kokoro-82M`) |
@@ -168,23 +171,79 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
 `updateEpisodeStage` (asserts expected prior status — throws on mismatch),
 `failEpisode`, `insertChat`, `listChats`.
 
-### 2.2 ArticleFetcher (design.md §2.3, frozen interface)
+### 2.2 SourceFetcher trio (design.md §2.3, frozen interfaces)
 
 `server/src/fetchers/types.ts`:
 
 ```ts
-export type FetchedArticle = { markdown: string; title: string; byline?: string; siteName?: string };
-export type FetchError = { code: "http" | "empty" | "timeout"; message: string };
-export type FetchResult = { ok: true; value: FetchedArticle } | { ok: false; error: FetchError };
-export interface ArticleFetcher { id: "firecrawl"; fetch(url: string): Promise<FetchResult>; }
+export type SourceInput =
+  | { kind: "article"; url: string }
+  | { kind: "tweet"; url: string }
+  | { kind: "topic"; topic: string };
+export type Dossier = { markdown: string; title: string; sources: { title: string; url: string }[] };
+export type FetchError = { code: "http" | "empty" | "timeout" | "no_sources"; message: string };
+export type FetchResult = { ok: true; value: Dossier } | { ok: false; error: FetchError };
+export interface SourceFetcher { kind: SourceInput["kind"]; fetch(input: SourceInput): Promise<FetchResult>; }
 ```
 
-`firecrawl.ts`: `POST ${config.firecrawlApiUrl}/v2/scrape`, headers
-`Authorization: Bearer ${config.firecrawlApiKey}`, body
+**Input classification** (frozen, `classifyInput(text: string): SourceInput`;
+lives in one function with unit tests):
+
+1. Trim. If it parses as a URL (`new URL(...)` after prepending `https://`
+   when the string starts with a bare hostname): hosts `x.com`, `twitter.com`,
+   `mobile.twitter.com`, `vxtwitter.com`, `fxtwitter.com` (any subdomain) →
+   `tweet`; any other URL → `article`.
+2. Otherwise → `topic`. Reject only: empty, > 500 chars.
+
+**`firecrawl.ts` (article):** `POST ${config.firecrawlApiUrl}/v2/scrape`,
+headers `Authorization: Bearer ${config.firecrawlApiKey}`, body
 `{"url": url, "formats": ["markdown"], "onlyMainContent": true}`, 60s timeout.
-Markdown < 500 chars ⇒ `{ok:false, error:{code:"empty"}}`. Result shape:
-verify against the running self-hosted instance (M5 stands it up; until then
-develop against a recorded fixture in `server/test/fixtures/firecrawl.json`).
+Markdown < 500 chars ⇒ `{code:"empty"}`. `sources = [{title, url}]`.
+Verify the response shape against the running self-hosted instance (M5);
+until then use the recorded fixture `server/test/fixtures/firecrawl.json`.
+
+**`tweet.ts`:** never fetch `x.com` pages (blocked; also forbidden via
+firecrawl). Use the fxtwitter resolver:
+`GET https://api.fxtwitter.com/status/<tweetId>` (id = last numeric path
+segment of the input URL). **VERIFY the JSON shape against a live call before
+coding** and pin what you found in a comment + fixture
+(`server/test/fixtures/fxtwitter.json`); the frozen *output* is the Dossier:
+
+```
+# <author name> (@handle) on X
+<tweet text>
+<subsequent same-author thread tweets, in order, blank-line separated>
+## Quoted tweet            (only if present)
+<quoted author + text>
+## Linked article          (only if the tweet body contains a non-twitter URL)
+<that URL passed through the firecrawl fetcher; skip silently on FetchError>
+```
+
+`sources` = tweet URL (+ linked-article URL if fetched). If the resolver
+lacks thread expansion, fetch each `replying_to`-chained same-author tweet by
+id (bounded: max 25). No API key. Resolver down ⇒ `{code:"http"}` (retry via
+pipeline backoff).
+
+**`research.ts` (topic):** one Anthropic call — copy this shape:
+
+```ts
+const response = await client.messages.create({
+  model: "claude-opus-4-8",
+  max_tokens: 16000,
+  thinking: { type: "adaptive" },
+  system: RESEARCH_SYSTEM_PROMPT,                       // Appendix B, verbatim
+  tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8 }],
+  messages: [{ role: "user", content: input.topic }],
+});
+```
+
+Handle `stop_reason === "pause_turn"` by appending the assistant turn and
+re-calling (max 5 continuations). Dossier markdown = concatenated text blocks;
+`sources` = unique `{title, url}` pairs from the `web_search_tool_result`
+blocks' results **plus** any the brief cites inline. Fewer than 2 sources ⇒
+`{code:"no_sources"}` — never fabricate an episode from model memory
+(design.md §2.11). Note: a `web_search_tool_result` whose `content` is an
+object (not a list) is a tool error — treat as `{code:"http"}`.
 
 ### 2.3 Pipeline worker (frozen behavior)
 
@@ -193,9 +252,10 @@ develop against a recorded fixture in `server/test/fixtures/firecrawl.json`).
 ```
 tick():
   ep = claimNextPipelineEpisode()        // oldest episode with status IN
-       (submitted, scraped, scripted) AND next_attempt_at <= now
+       (submitted, sourced, scripted, verified) AND next_attempt_at <= now
   if none: reschedule tick; return
-  stage = STAGE_BY_STATUS[ep.status]     // submitted→scrape, scraped→script, scripted→synthesize
+  stage = STAGE_BY_STATUS[ep.status]     // submitted→source, sourced→script,
+                                         // scripted→factcheck, verified→synthesize
   try:
     await stage.run(ep)                  // each stage does its work then
                                          // updateEpisodeStage(ep.id, expectedPrior, next, patch)
@@ -213,7 +273,7 @@ tick():
 - Concurrency is exactly 1 (the single loop *is* the guarantee — do not add
   workers, queues, or Promise.all here).
 - On boot, episodes stuck in `synthesizing` (crash mid-render) are reset to
-  `scripted` once (guard with an `attempts` bump).
+  `verified` once (guard with an `attempts` bump).
 
 **DONE-gate:** `bun test` green with: status-machine unit tests (no backwards
 writes; unexpected prior status throws), worker integration test with all
@@ -249,15 +309,62 @@ const response = await client.messages.parse({
   max_tokens: 16000,
   thinking: { type: "adaptive" },
   system: SCRIPT_SYSTEM_PROMPT,           // Appendix B, verbatim
-  messages: [{ role: "user", content: articleMarkdown }],
+  messages: [{ role: "user", content: dossier.markdown }],
   output_config: { format: zodOutputFormat(ScriptSchema) },
 });
 if (!response.parsed_output) throw new Error("script parse failed"); // worker retry covers it
 ```
 
-Stamp `idx` (array order) onto segments before storing. Store as
-`script_json`. Do not post-process the text (no markdown stripping — the
-prompt forbids markdown).
+The user content is `dossier.markdown` and nothing else — the script stage
+never gets tools, web access, or extra context (design.md §2.11). Stamp `idx`
+(array order) onto segments before storing. Store as `script_json`. Do not
+post-process the text (no markdown stripping — the prompt forbids markdown).
+
+### 3.1b Fact-check stage (`server/src/pipeline/factcheck.ts`)
+
+One structured-output call; for `topic` episodes it ALSO gets the web search
+tool (structured outputs + tools work together — keep the same
+`output_config`):
+
+```ts
+const FactcheckSchema = z.object({
+  claims: z.array(z.object({
+    segmentIdx: z.number().int(),
+    claim: z.string(),
+    verdict: z.enum(["supported", "unsupported", "distorted"]),
+    note: z.string(),
+    sourceUrl: z.string().optional(),
+  })).min(1),
+  revisedSegments: z.array(z.object({
+    speaker: z.enum(["HOST", "EXPERT"]),
+    text: z.string().min(1),
+  })).min(6).max(60).optional(),        // REQUIRED iff any verdict !== "supported"
+});
+
+const response = await client.messages.parse({
+  model: "claude-opus-4-8",
+  max_tokens: 16000,
+  thinking: { type: "adaptive" },
+  system: FACTCHECK_SYSTEM_PROMPT,      // Appendix B, verbatim
+  tools: episode.source.kind === "topic"
+    ? [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }]
+    : undefined,
+  messages: [{ role: "user", content:
+    `## Sources dossier\n${dossier.markdown}\n\n## Script\n` +
+    segments.map(s => `[${s.idx}] ${s.speaker}: ${s.text}`).join("\n") }],
+  output_config: { format: zodOutputFormat(FactcheckSchema) },
+});
+```
+
+Stage logic (frozen):
+1. All verdicts `supported` → status `verified`, script unchanged.
+2. Any other verdict → `revisedSegments` must be present (missing = stage
+   error → retry); replace `script_json` segments with the revision
+   (re-stamp `idx`), store the claim table as `factcheck_json`, status
+   `verified`. **Do not re-run fact-check on the revision** — one round,
+   by design (design.md §2.5b).
+3. `factcheck_json` is stored in BOTH cases (the all-supported table is the
+   positive audit trail).
 
 ### 3.2 Ask endpoints (`server/src/api/ask.ts`)
 
@@ -277,7 +384,7 @@ const response = await client.messages.create({
   model: "claude-opus-4-8",
   max_tokens: 1024,
   system: [
-    { type: "text", text: groundingBlock(episode),          // article markdown + FULL transcript with [mm:ss] stamps + Appendix B answer rules
+    { type: "text", text: groundingBlock(episode),          // dossier markdown + sources list + FULL transcript with [mm:ss] stamps + Appendix B answer rules
       cache_control: { type: "ephemeral" } },               // stable per episode → cached across questions
     { type: "text", text: `The listener has heard up to ${mmss(positionMs)}. Do not spoil later parts unless asked.` },
   ],
@@ -290,9 +397,13 @@ must come back as plain spoken prose (the Appendix B rules say no markdown,
 ≤ 120 words) because it goes straight to TTS.
 
 **DONE-gate:** integration test with a fixture article produces a valid script
-(schema passes, 6–60 segments, both speakers present); `ask-text` against a
-seeded episode returns a non-empty answer and writes 2 chat rows; second
-ask-text call shows `usage.cache_read_input_tokens > 0` (log it).
+(schema passes, 6–60 segments, both speakers present); fact-check on that
+script returns ≥ 1 claim and reaches `verified`; a poisoned-script test (a
+fixture script with one planted false claim not in the dossier) comes back
+non-supported with a revision; `classifyInput` unit tests (article/tweet/topic
++ rejects); `ask-text` against a seeded episode returns a non-empty answer and
+writes 2 chat rows; second ask-text call shows
+`usage.cache_read_input_tokens > 0` (log it).
 
 ---
 
@@ -303,9 +414,9 @@ ask-text call shows `usage.cache_read_input_tokens > 0` (log it).
 | Method + path | Request | Response |
 |---|---|---|
 | `GET /api/healthz` | — | `{"ok":true}` |
-| `POST /api/episodes` | JSON `{url}` **or** raw `text/plain` body that is a bare URL (iOS Shortcut) | `201 {id, status:"submitted"}`; invalid URL → `400 {error}` |
-| `GET /api/episodes` | — | `[{id,title,status,durationMs,createdAt}]` newest first |
-| `GET /api/episodes/:id` | — | full episode incl. `script.segments[].startMs`, `error` |
+| `POST /api/episodes` | JSON `{input: "<url or topic text>"}` **or** raw `text/plain` body (iOS Shortcut); server runs `classifyInput` (§2.2) | `201 {id, status:"submitted", source:{kind,...}}`; rejected input → `400 {error}` |
+| `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,createdAt}]` newest first |
+| `GET /api/episodes/:id` | — | full episode incl. `source`, `dossier.sources`, `factcheck.claims`, `script.segments[].startMs`, `error` (never `dossier.markdown` in the list route — it's big) |
 | `GET /api/episodes/:id/audio` | supports `Range` | `200`/`206 audio/mpeg`, `Accept-Ranges: bytes` |
 | `GET /api/episodes/:id/chats` | — | `[{role,text,positionMs,createdAt}]` |
 | `POST .../ask`, `POST .../ask-text` | see M3 | see M3 |
@@ -354,8 +465,11 @@ non-`/api` path (SPA fallback to `index.html`).
   Persistent "listening" indicator whenever recognition is armed.
 - **Mic requires HTTPS**: if `!window.isSecureContext`, hide mic UI and show
   "voice needs the Tailscale HTTPS address" hint. Do not try anyway.
-- **Submit box**: paste URL → POST → optimistic list entry that polls
-  `GET /api/episodes/:id` every 5s until `ready`/`failed`.
+- **Submit box**: one text input, placeholder "Article URL, X link, or a
+  topic…" → POST → optimistic list entry that polls `GET /api/episodes/:id`
+  every 5s until `ready`/`failed`.
+- **Episode detail**: sources list (tappable links) and, when present, the
+  fact-check claim table (claim / verdict / note) — collapsed by default.
 
 **DONE-gate:** `bun run build` in app/; serve via learn; on desktop browser:
 submit → (stubbed pipeline ok locally) → play, scrub, ask-text in chat pane.
@@ -381,9 +495,11 @@ Range curl check passes. Real-iPhone voice testing lands in M6.
   `~/Repos/podcast-learning`), then `podman compose up -d --build`.
 - Tailscale: `sudo tailscale up`, then `sudo tailscale serve --bg 7900`.
 
-**DONE-gate (on the box):** end-to-end with a real article URL:
-`curl -X POST .../api/episodes -d '{"url":"<real article>"}'` → poll until
-`ready` → download audio.mp3, listen. `curl http://<box>:3002` from another
+**DONE-gate (on the box):** end-to-end for ALL THREE input kinds — a real
+article URL, a real X thread link, and a topic (e.g. "what changed in
+Postgres 18") — each via `curl -X POST .../api/episodes -d '{"input":"..."}'`
+→ poll until `ready` → download audio.mp3, listen; for the topic episode
+confirm `dossier.sources` ≥ 2 and `factcheck.claims` is populated. `curl http://<box>:3002` from another
 LAN machine must FAIL (firecrawl not exposed). `https://<tailnet-name>/`
 loads the PWA with a valid cert.
 
@@ -405,13 +521,14 @@ fix; each fix re-verified on device.
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS episodes (
   id              TEXT PRIMARY KEY,
-  url             TEXT NOT NULL,
+  source_json     TEXT NOT NULL,                -- SourceInput {kind, url?|topic?}
   title           TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'submitted'
-                  CHECK (status IN ('submitted','scraped','scripted','synthesizing','ready','failed')),
+                  CHECK (status IN ('submitted','sourced','scripted','verified','synthesizing','ready','failed')),
   error_json      TEXT,
-  article_json    TEXT,
+  dossier_json    TEXT,                          -- Dossier {markdown, title, sources[]}
   script_json     TEXT,
+  factcheck_json  TEXT,                          -- {claims:[...]} audit trail
   audio_path      TEXT,
   duration_ms     INTEGER,
   attempts        INTEGER NOT NULL DEFAULT 0,
@@ -433,11 +550,29 @@ CREATE INDEX IF NOT EXISTS idx_chats_episode ON chats(episode_id, created_at);
 
 ## Appendix B — Prompts (verbatim; changes are spec changes)
 
+`RESEARCH_SYSTEM_PROMPT`:
+
+```
+You are a research assistant preparing a source dossier for a factual
+podcast. Research the topic the user provides using web search. Prefer
+primary sources and reporting from the last year where recency matters.
+
+Write a structured brief in markdown:
+- Open with a two-sentence framing of why the topic matters now.
+- Cover the key facts, the state of the art or debate, and at least one
+  common misconception.
+- EVERY factual claim must name its source inline, like: "... (Source:
+  <publication>, <url>)". A claim you cannot source does not go in the brief.
+- End with a "## Sources" section listing every source as "- <title>: <url>".
+- 800 to 1,500 words. No filler.
+```
+
 `SCRIPT_SYSTEM_PROMPT`:
 
 ```
-You write scripts for a two-host learning podcast. Rewrite the article the
-user provides as a natural spoken dialogue between HOST and EXPERT.
+You write scripts for a two-host learning podcast. Rewrite the source
+dossier the user provides as a natural spoken dialogue between HOST and
+EXPERT.
 
 HOST is curious and asks the questions a smart listener would ask; HOST also
 reacts, summarizes, and keeps momentum. EXPERT explains clearly with concrete
@@ -454,8 +589,38 @@ Requirements:
   abbreviations, and symbols the way a person would say them.
 - NO markdown, NO stage directions, NO sound-effect cues, NO segment titles.
   Text fields contain only words to be spoken aloud.
-- Do not invent facts that are not in the article; attribute claims the
-  article attributes.
+- Use ONLY facts present in the dossier. Do not add facts, numbers, names,
+  or dates from your own knowledge, even correct ones.
+- Preserve attribution: if the dossier attributes a claim to a source or a
+  person (including a single tweet), the dialogue attributes it the same way
+  — "she argues that...", "the paper claims...", never as established fact.
+```
+
+`FACTCHECK_SYSTEM_PROMPT`:
+
+```
+You are a fact-checker for a podcast. You receive a source dossier and a
+script. Your job: no factual statement survives that the dossier does not
+support.
+
+1. List every checkable factual claim in the script (numbers, dates, names,
+   causal statements, attributions). Give each the segment index it appears
+   in.
+2. Verdict per claim:
+   - supported: the dossier states it, with the same meaning and strength.
+   - distorted: the dossier says something related but the script changed
+     the number, strength, or attribution.
+   - unsupported: the dossier does not contain it.
+   If you have a web search tool, use it to re-check time-sensitive claims;
+   a claim confirmed by search counts as supported (set sourceUrl).
+3. If ANY claim is distorted or unsupported, return revisedSegments: the
+   complete corrected script (same style rules as the original), with
+   distorted claims fixed, unsupported claims removed or rewritten as
+   explicitly attributed uncertainty ("the thread claims, though this isn't
+   confirmed..."). Keep the dialogue natural — repair, don't amputate.
+Opinions, rhetorical questions, and the hosts' own framing are not claims.
+Be strict about numbers and attribution; do not pass a claim as supported
+because it is plausible.
 ```
 
 Answer rules (appended inside `groundingBlock`):
@@ -500,3 +665,13 @@ provider is ever built (design.md §2.6).
 - [ ] Reading `process.env` outside config.ts.
 - [ ] Status written backwards or skipping a state → updateEpisodeStage throws;
       don't "fix" by removing the assert.
+- [ ] Fetching x.com/twitter.com through Firecrawl → blocked/garbage; tweets
+      go through the resolver only.
+- [ ] Giving the script stage web search "to be helpful" → forbidden; only
+      research and topic-fact-check calls get tools.
+- [ ] Skipping or looping the fact-check stage → exactly one pass, one
+      revision round, always stored; no bypass flag exists.
+- [ ] Topic with < 2 sources turned into an episode anyway → must fail with
+      no_sources; never script from model memory.
+- [ ] Forgetting `pause_turn` handling on web-search calls → silently
+      truncated research briefs.
