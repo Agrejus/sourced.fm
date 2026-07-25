@@ -1,17 +1,14 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { config } from "../config";
+import type { Message } from "ollama";
+import { ollama, MODEL, WEB_TOOLS, webSearch, webFetch } from "../llm";
 import { RESEARCH_SYSTEM_PROMPT } from "../prompts";
 import type { FetchResult, SourceFetcher, SourceInput } from "./types";
 
-const MODEL = "claude-opus-4-8";
-const MAX_CONTINUATIONS = 5;
+const MAX_TOOL_ROUNDS = 8;
 
-const client = new Anthropic({ apiKey: config.anthropicApiKey });
-
-// Topic research: one Claude call with the server-side web search tool. The
-// dossier is the cited brief; sources come from the tool results (plus any the
-// brief cites inline). Fewer than 2 sources fails as no_sources — the system
-// never fabricates an episode from model memory (design.md §2.11).
+// Topic research: an Ollama chat with the web_search / web_fetch tools in an
+// agent loop. The model searches, reads, and writes a cited brief; sources are
+// harvested from the tool results. Fewer than 2 sources fails as no_sources —
+// the system never fabricates an episode from model memory (design.md §2.11).
 export const researchFetcher: SourceFetcher = {
   kind: "topic",
   async fetch(input: SourceInput): Promise<FetchResult> {
@@ -19,49 +16,56 @@ export const researchFetcher: SourceFetcher = {
       return { ok: false, error: { code: "http", message: "research fetcher got non-topic input" } };
     }
 
-    const messages: Anthropic.MessageParam[] = [{ role: "user", content: input.topic }];
-    const textParts: string[] = [];
+    const messages: Message[] = [
+      { role: "system", content: RESEARCH_SYSTEM_PROMPT },
+      { role: "user", content: input.topic },
+    ];
     const sources = new Map<string, { title: string; url: string }>();
+    let brief = "";
 
     try {
-      for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
-        const response = await client.messages.create({
-          model: MODEL,
-          max_tokens: 16000,
-          thinking: { type: "adaptive" },
-          system: RESEARCH_SYSTEM_PROMPT,
-          tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8 }],
-          messages,
-        });
+      for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+        const response = await ollama.chat({ model: MODEL, stream: false, tools: WEB_TOOLS, messages });
+        const msg = response.message;
+        messages.push(msg);
 
-        for (const block of response.content) {
-          if (block.type === "text") {
-            textParts.push(block.text);
-          } else if (block.type === "web_search_tool_result") {
-            const content = block.content as unknown;
-            // A tool-result whose content is an object (not a list) is an error.
-            if (!Array.isArray(content)) {
-              return { ok: false, error: { code: "http", message: "web_search tool error" } };
+        const calls = msg.tool_calls ?? [];
+        if (calls.length === 0) {
+          brief = msg.content.trim();
+          break;
+        }
+
+        for (const call of calls) {
+          const name = call.function.name;
+          const args = (call.function.arguments ?? {}) as { query?: string; max_results?: number; url?: string };
+          let toolContent: string;
+          try {
+            if (name === "web_search") {
+              const results = await webSearch(String(args.query ?? ""), Number(args.max_results ?? 8));
+              for (const r of results) sources.set(r.url, { title: r.title || r.url, url: r.url });
+              toolContent = JSON.stringify(
+                results.map((r) => ({ title: r.title, url: r.url, content: r.content.slice(0, 2000) })),
+              );
+            } else if (name === "web_fetch") {
+              const url = String(args.url ?? "");
+              const fetched = await webFetch(url);
+              if (url) sources.set(url, { title: fetched.title || url, url });
+              toolContent = JSON.stringify({ title: fetched.title, content: fetched.content.slice(0, 4000) });
+            } else {
+              toolContent = `unknown tool: ${name}`;
             }
-            for (const result of content as { url?: string; title?: string }[]) {
-              if (result.url) sources.set(result.url, { title: result.title || result.url, url: result.url });
-            }
+          } catch (e) {
+            toolContent = `tool error: ${e instanceof Error ? e.message : String(e)}`;
           }
+          messages.push({ role: "tool", content: toolContent, tool_name: name });
         }
-
-        if (response.stop_reason === "pause_turn" && turn < MAX_CONTINUATIONS) {
-          messages.push({ role: "assistant", content: response.content });
-          continue;
-        }
-        break;
       }
     } catch (e) {
       return { ok: false, error: { code: "http", message: e instanceof Error ? e.message : String(e) } };
     }
 
-    const markdown = textParts.join("\n").trim();
-    // Also pick up sources cited inline in the brief ("(Source: pub, https://...)").
-    for (const match of markdown.matchAll(/(https?:\/\/[^\s)]+)/g)) {
+    // Also pick up any sources the brief cites inline.
+    for (const match of brief.matchAll(/(https?:\/\/[^\s)]+)/g)) {
       const url = match[1]!.replace(/[.,]+$/, "");
       if (!sources.has(url)) sources.set(url, { title: url, url });
     }
@@ -69,10 +73,6 @@ export const researchFetcher: SourceFetcher = {
     if (sources.size < 2) {
       return { ok: false, error: { code: "no_sources", message: "fewer than 2 usable sources" } };
     }
-
-    return {
-      ok: true,
-      value: { markdown, title: input.topic, sources: [...sources.values()] },
-    };
+    return { ok: true, value: { markdown: brief, title: input.topic, sources: [...sources.values()] } };
   },
 };

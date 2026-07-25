@@ -4,6 +4,7 @@ import { accessors, db } from "./db";
 import { speech } from "./speech";
 import { productionStages } from "./pipeline/stages";
 import { createWorker } from "./pipeline/worker";
+import { createAsk } from "./api/ask";
 
 // Boot order: config (parsed at import — crashes here on bad env), db (schema
 // ensured at import), http, then the pipeline worker.
@@ -13,6 +14,10 @@ const app = new Hono();
 app.get("/api/healthz", (c) => c.json({ ok: true }));
 
 const now = () => Date.now();
+
+const ask = createAsk({ accessors, speech, now });
+app.post("/api/episodes/:id/ask-text", (c) => ask.handleAskText(c));
+app.post("/api/episodes/:id/ask", (c) => ask.handleAsk(c));
 
 // Crash recovery: re-render anything left mid-synthesis (§2.2).
 const reset = accessors.resetStuckSynthesizing(now());

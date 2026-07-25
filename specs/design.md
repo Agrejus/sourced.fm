@@ -15,7 +15,7 @@ as an episode you can play on your iPhone from anywhere (Tailscale). While
 you listen, you can interrupt — hold the mic button **or say the word
 "question"** — ask a question out loud, hear the answer spoken back, and
 resume playback. Audio in both directions is local and free; the only metered
-cost in the whole system is Anthropic tokens.
+cost in the whole system is Ollama Cloud tokens (the LLM).
 
 ### Factual correctness is a pipeline property, not a prompt
 
@@ -48,9 +48,9 @@ trail.
      same-author thread, and any quoted tweet; a linked article inside the
      tweet is fetched via Firecrawl and appended. (X itself blocks scrapers —
      we go through a resolver, not the page.)
-   - *Topic* → **research mode**: Claude with server-side web search gathers
-     current sources and writes a cited brief. The dossier is the brief plus
-     the source list.
+   - *Topic* → **research mode**: the LLM with Ollama's web search/fetch tools
+     gathers current sources and writes a cited brief. The dossier is the brief
+     plus the source list.
 3. **Script** — an LLM rewrites the dossier as a dialogue between two hosts:
    HOST (curious, asks the questions you would) and EXPERT (explains). Output is
    structured segments, not free text.
@@ -89,7 +89,7 @@ Dependencies (server-side; keys via `.env` on the box):
 | Dependency | Used for | Notes |
 |---|---|---|
 | Firecrawl (self-hosted) | URL → clean markdown + metadata | AGPL, free; 4 containers on the box; no cloud key. Cloud-only anti-bot ("fire-engine") is absent — hard-bot-walled sites may fail (see §2.3) |
-| LLM provider (Anthropic) | topic research (server-side web search), dialogue script, fact-check pass, Q&A answers | the only metered cost |
+| LLM provider (Ollama Cloud) | topic research (via Ollama web search/fetch), dialogue script, fact-check pass, Q&A answers | the only metered cost; `glm-5.2` by default (`OLLAMA_MODEL`; `gpt-oss:120b` also verified) |
 | Tweet-resolver API | X/Twitter link → tweet + thread JSON | X blocks scrapers; resolver choice pinned in implementation.md |
 | `speech` service (local GPU) | episode TTS (VibeVoice-1.5B), answer TTS (Kokoro-82M), STT + alignment (faster-whisper) | free; ~11GB VRAM budget, see §2.7 |
 | ElevenLabs (optional fallback) | episode/answer TTS if local quality disappoints | pure config swap behind the SpeechProvider seam (§2.6); no key needed unless enabled |
@@ -109,7 +109,7 @@ Dependencies (server-side; keys via `.env` on the box):
   nobody "fixes" it. The Turing card also means fp16 (no bf16) and SDPA (no
   FlashAttention 2) — both must be set explicitly, VibeVoice defaults to bf16.
 - **Cost.** Audio is free (local GPU + electricity). The only metered spend is
-  Anthropic tokens (script + Q&A). The ElevenLabs fallback, if ever enabled,
+  Ollama Cloud tokens (research + script + fact-check + Q&A). The ElevenLabs fallback, if ever enabled,
   costs ~$1.50–4 per 12-minute episode.
 
 ---
@@ -212,10 +212,10 @@ text body is `topic`.
   (+ linked article URL). A bare opinion tweet with no substance still makes
   an episode — the dossier honestly says it's one person's claim, and the
   fact-check stage hedges accordingly.
-- **`topic` (research mode)** — one Claude call with the **server-side web
-  search tool**: research the topic, prefer primary/recent sources, and write
-  a structured brief where every claim carries its source. The dossier is the
-  brief; `sources` come from the tool's citations. A topic that turns up no
+- **`topic` (research mode)** — an LLM agent loop with **Ollama's web
+  search/fetch tools**: research the topic, prefer primary/recent sources, and
+  write a structured brief where every claim carries its source. The dossier is
+  the brief; `sources` come from the tool results. A topic that turns up no
   usable sources is a `FetchError`, not a made-up episode.
 
 ### 2.4 Storage (bun:sqlite, WAL mode)
@@ -240,7 +240,7 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
 
 ### 2.5 Script generation contract
 
-- One LLM call (Claude, structured output): `{title, segments:[{speaker,text}]}`.
+- One LLM call (Ollama, structured output): `{title, segments:[{speaker,text}]}`.
   The user content is the **dossier markdown only** — the script may not draw
   on anything else, and the prompt forbids inventing facts beyond it.
 - Target 10–15 min spoken (~1,500–2,200 words). HOST asks/reacts/summarizes;
@@ -374,8 +374,8 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
   `deploy/README`.
 - Env (`.env` on the box, gitignored): `FIRECRAWL_API_URL`
   (`http://firecrawl-api:3002`), `FIRECRAWL_API_KEY` (self-set token),
-  `ANTHROPIC_API_KEY`, `SPEECH_URL` (`http://speech:7910`),
-  `SPEECH_PROVIDER=local`, `PORT`. ElevenLabs vars (`ELEVENLABS_API_KEY`,
+  `OLLAMA_API_KEY` (+ optional `OLLAMA_HOST`, `OLLAMA_MODEL`), `SPEECH_URL`
+  (`http://speech:7910`), `SPEECH_PROVIDER=local`, `PORT`. ElevenLabs vars (`ELEVENLABS_API_KEY`,
   `ELEVENLABS_VOICE_HOST/EXPERT`) exist only if the fallback provider is
   enabled.
 - Ship code like rust-runtime does: bare-push over SSH
@@ -401,7 +401,7 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - The fact-check stage runs exactly one revision round — never a loop.
 - A topic with no usable sources fails at sourcing; the system never
   fabricates an episode from model memory alone.
-- No API key (Firecrawl/Anthropic/ElevenLabs-if-enabled) ever reaches the PWA —
+- No API key (Firecrawl/Ollama/ElevenLabs-if-enabled) ever reaches the PWA —
   all external calls are server-side.
 - Nothing outside `fetchers/` knows which fetcher produced the article;
   nothing outside `server/src/speech/` knows which speech provider ran.

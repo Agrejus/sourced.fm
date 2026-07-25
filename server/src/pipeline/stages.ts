@@ -3,6 +3,8 @@ import type { Script } from "../domain";
 import type { SourceInput } from "../fetchers/types";
 import { fetcherFor } from "../fetchers";
 import type { SpeechProvider } from "../speech";
+import { scriptStage } from "./script";
+import { factcheckStage } from "./factcheck";
 
 export interface Stage {
   name: string;
@@ -78,11 +80,11 @@ export function synthesizeStage(deps: StageDeps): Stage {
   };
 }
 
-// M2 wires the non-LLM stages; script (sourced) and factcheck (scripted) are
-// registered in M3.
 export function productionStages(deps: StageDeps): Partial<Record<ClaimableStatus, Stage>> {
   return {
     submitted: sourceStage(deps),
+    sourced: scriptStage(deps),
+    scripted: factcheckStage(deps),
     verified: synthesizeStage(deps),
   };
 }

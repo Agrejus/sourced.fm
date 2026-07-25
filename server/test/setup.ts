@@ -4,7 +4,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.ANTHROPIC_API_KEY ??= "test-key";
+process.env.OLLAMA_API_KEY ??= "test-key";
 process.env.FIRECRAWL_API_URL ??= "http://firecrawl-api:3002";
 process.env.FIRECRAWL_API_KEY ??= "test-key";
 process.env.SPEECH_URL ??= "http://speech:7910";

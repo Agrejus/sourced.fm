@@ -35,7 +35,9 @@ function speechProvider(): "local" | "elevenlabs" {
 export const config = Object.freeze({
   port: port(),
   dataDir: optional("DATA_DIR", "/data"),
-  anthropicApiKey: required("ANTHROPIC_API_KEY"),
+  ollamaApiKey: required("OLLAMA_API_KEY"),
+  ollamaHost: optional("OLLAMA_HOST", "https://ollama.com"),
+  ollamaModel: optional("OLLAMA_MODEL", "glm-5.2"),
   firecrawlApiUrl: required("FIRECRAWL_API_URL"),
   firecrawlApiKey: required("FIRECRAWL_API_KEY"),
   speechUrl: required("SPEECH_URL"),

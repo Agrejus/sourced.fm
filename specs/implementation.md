@@ -36,8 +36,10 @@ Read design.md first for intent; this file wins on any detail-level conflict.
 | Speaker enum | `"HOST"` \| `"EXPERT"` (exactly, uppercase) |
 | Episode statuses | `submitted → sourced → scripted → verified → synthesizing → ready`, terminal `failed` |
 | Source kinds | `"article"` \| `"tweet"` \| `"topic"` |
-| LLM model id | `claude-opus-4-8` |
-| Web search tool (topic research + topic fact-check) | `{ type: "web_search_20260209", name: "web_search" }` |
+| LLM provider | **Ollama Cloud** — host `https://ollama.com`, `POST /api/chat`, auth `Authorization: Bearer $OLLAMA_API_KEY`; official `ollama` JS client. (VERIFIED 2026-07-25.) |
+| LLM model id | `glm-5.2` (override via `OLLAMA_MODEL`; `gpt-oss:120b` also verified). Both pass the M3 gate; glm-5.2 was faster in the M3 comparison (2026-07-25). |
+| Structured outputs | Ollama JSON mode (`format: "json"`) + the JSON schema (`z.toJSONSchema`) embedded in the prompt, then zod-validate the reply. VERIFIED 2026-07-25: some models (e.g. gpt-oss) ignore schema-constrained `format` and return prose, so we don't rely on it; JSON mode + schema-in-prompt yields JSON in `message.content` (reasoning stays in `message.thinking`); `chatJSON` extracts the JSON object (tolerating an occasional prose/```fence wrapper on long prompts) before validating. No Anthropic `parse`/`parsed_output`. |
+| Web search (topic research + topic fact-check) | Ollama hosted `POST https://ollama.com/api/web_search` + `/api/web_fetch`, exposed to the model as `web_search`/`web_fetch` function tools (VERIFIED 2026-07-25) |
 | Tweet resolver | `https://api.fxtwitter.com` (**VERIFY**, §2.2) |
 | Whisper model | `distil-small.en` (faster-whisper) |
 | Episode TTS model | weights `microsoft/VibeVoice-1.5B` (HF); inference code from community fork `vibevoice-community/VibeVoice` pinned at `07cb79feadd2d3fd7f47530d4c964a12857936a0`. Microsoft removed the official VibeVoice-TTS code and disabled its usage docs on 2025-09-05 (VERIFIED 2026-07-25); the HF weights remain and the fork preserves the loader. |
@@ -60,7 +62,7 @@ deploy/            compose.yml + README.md (box setup)
 data/              gitignored
 ```
 
-Pinned deps — server: `hono`, `@anthropic-ai/sdk`, `zod`. Nothing else
+Pinned deps — server: `hono`, `ollama`, `zod`. Nothing else
 (uuid v7 via `Bun.randomUUIDv7()`, sqlite via `bun:sqlite` — built in).
 Pinned deps — app: react, react-dom only (Vite template defaults). No UI
 library, no state library, no router (single page).
@@ -274,26 +276,17 @@ lacks thread expansion, fetch each `replying_to`-chained same-author tweet by
 id (bounded: max 25). No API key. Resolver down ⇒ `{code:"http"}` (retry via
 pipeline backoff).
 
-**`research.ts` (topic):** one Anthropic call — copy this shape:
-
-```ts
-const response = await client.messages.create({
-  model: "claude-opus-4-8",
-  max_tokens: 16000,
-  thinking: { type: "adaptive" },
-  system: RESEARCH_SYSTEM_PROMPT,                       // Appendix B, verbatim
-  tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8 }],
-  messages: [{ role: "user", content: input.topic }],
-});
-```
-
-Handle `stop_reason === "pause_turn"` by appending the assistant turn and
-re-calling (max 5 continuations). Dossier markdown = concatenated text blocks;
-`sources` = unique `{title, url}` pairs from the `web_search_tool_result`
-blocks' results **plus** any the brief cites inline. Fewer than 2 sources ⇒
-`{code:"no_sources"}` — never fabricate an episode from model memory
-(design.md §2.11). Note: a `web_search_tool_result` whose `content` is an
-object (not a list) is a tool error — treat as `{code:"http"}`.
+**`research.ts` (topic):** an Ollama chat agent loop with the `web_search` /
+`web_fetch` function tools (`WEB_TOOLS` in `llm.ts`), `RESEARCH_SYSTEM_PROMPT`
+as system and the topic as the user message. Each round: call
+`ollama.chat({model, tools, messages})`; append the assistant turn; if it has
+`tool_calls`, execute each against the hosted `POST /api/web_search` /
+`/api/web_fetch` endpoints, append the result as a `{role:"tool", content,
+tool_name}` message, and loop (bounded, max 8 rounds); when the assistant turn
+has no `tool_calls`, its content is the brief. Dossier markdown = that brief;
+`sources` = unique `{title, url}` from the tool results **plus** any the brief
+cites inline. Fewer than 2 sources ⇒ `{code:"no_sources"}` — never fabricate
+an episode from model memory (design.md §2.11).
 
 ### 2.3 Pipeline worker (frozen behavior)
 
@@ -333,18 +326,19 @@ three stages stubbed, fetcher test against the fixture.
 
 ## M3 — LLM stages: script generation + ask
 
-Both use `@anthropic-ai/sdk` with `new Anthropic()` (key from env). Model:
-`claude-opus-4-8`. No `temperature`/`top_p` (removed on this model — 400).
-Omit `thinking` except where stated.
+All LLM calls go through `llm.ts` (the single Ollama Cloud seam): `chatJSON`
+(structured), `chatText` (plain), `ollama.chat` + `WEB_TOOLS` (agent loop),
+and `webSearch`/`webFetch`. Model `glm-5.2` (`OLLAMA_MODEL`). Structured
+output is Ollama's `format` = `z.toJSONSchema(schema)`, validated with the same
+zod schema on return.
 
 ### 3.1 Script generation (`server/src/pipeline/script.ts`)
 
-Use structured outputs — copy this shape exactly:
+Use the structured-output seam — one `chatJSON` call:
 
 ```ts
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { chatJSON } from "../llm";
 
 const ScriptSchema = z.object({
   title: z.string(),
@@ -354,15 +348,9 @@ const ScriptSchema = z.object({
   })).min(6).max(60),
 });
 
-const response = await client.messages.parse({
-  model: "claude-opus-4-8",
-  max_tokens: 16000,
-  thinking: { type: "adaptive" },
-  system: SCRIPT_SYSTEM_PROMPT,           // Appendix B, verbatim
-  messages: [{ role: "user", content: dossier.markdown }],
-  output_config: { format: zodOutputFormat(ScriptSchema) },
-});
-if (!response.parsed_output) throw new Error("script parse failed"); // worker retry covers it
+// chatJSON uses Ollama JSON mode + the schema embedded in the prompt, then
+// validates the reply with ScriptSchema (throws on mismatch → worker retry).
+const parsed = await chatJSON(ScriptSchema, SCRIPT_SYSTEM_PROMPT, dossier.markdown);
 ```
 
 The user content is `dossier.markdown` and nothing else — the script stage
@@ -374,19 +362,21 @@ post-process the text (no markdown stripping — the prompt forbids markdown).
 `dossier.title`; the `script` stage overwrites it with the script's `title`.
 The script title wins — it's written for listeners.
 
-**M3 pre-flight (do before writing the stages):** create
-`server/scripts/anthropic-smoke.ts` making ONE `messages.parse` call with a
-trivial 2-field zod schema and `thinking: {type: "adaptive"}`, run it, and
-keep it checked in. The SDK snippets in this file are believed-current but
-are upstream-volatile — if the smoke call fails on any surface detail
-(import path, `output_config`, `parsed_output`), rule 2 applies: fix the
-spec's snippets first, then implement.
+**M3 pre-flight:** `server/scripts/ollama-smoke.ts` makes ONE `ollama.chat`
+call with a trivial 2-field zod schema via JSON mode + schema-in-prompt, plus
+one `/api/web_search` probe; run it and keep it checked in. The surface is
+upstream-volatile — if the smoke fails on any detail (host/auth, `format`
+shape, response shape, web-search contract), rule 2 applies: fix the spec's
+snippets first, then implement.
 
 ### 3.1b Fact-check stage (`server/src/pipeline/factcheck.ts`)
 
-One structured-output call; for `topic` episodes it ALSO gets the web search
-tool (structured outputs + tools work together — keep the same
-`output_config`):
+One `chatJSON` call. For `topic` episodes, first gather fresh web evidence
+(`webSearch(source.topic)`) and append it to the dossier context under a
+"## Fresh web evidence" heading so time-sensitive claims can be re-checked; the
+structured call itself stays tool-free for reliable JSON (giving `format` and
+`tools` to the same call is unreliable). Non-topic episodes check against the
+dossier alone.
 
 ```ts
 const FactcheckSchema = z.object({
@@ -403,19 +393,11 @@ const FactcheckSchema = z.object({
   })).min(6).max(60).optional(),        // REQUIRED iff any verdict !== "supported"
 });
 
-const response = await client.messages.parse({
-  model: "claude-opus-4-8",
-  max_tokens: 16000,
-  thinking: { type: "adaptive" },
-  system: FACTCHECK_SYSTEM_PROMPT,      // Appendix B, verbatim
-  tools: episode.source.kind === "topic"
-    ? [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }]
-    : undefined,
-  messages: [{ role: "user", content:
-    `## Sources dossier\n${dossier.markdown}\n\n## Script\n` +
-    segments.map(s => `[${s.idx}] ${s.speaker}: ${s.text}`).join("\n") }],
-  output_config: { format: zodOutputFormat(FactcheckSchema) },
-});
+const evidence = source.kind === "topic" ? await freshEvidence(source) : "";
+const userContent =
+  `## Sources dossier\n${dossier.markdown}${evidence}\n\n## Script\n` +
+  segments.map(s => `[${s.idx}] ${s.speaker}: ${s.text}`).join("\n");
+const result = await chatJSON(FactcheckSchema, FACTCHECK_SYSTEM_PROMPT, userContent);
 ```
 
 Stage logic (frozen — this stage NEVER moves an episode to `failed` on its
@@ -440,24 +422,28 @@ own; only the worker's attempts-exhausted path does):
   piping the wav stream straight through (`return new Response(upstream.body)`
   — never buffer).
 
-Answer LLM call (both endpoints), with prompt caching on the big stable block:
+Answer LLM call (both endpoints) — one `chatText` over: a single `system`
+message = `groundingBlock(dossier, script)` (dossier markdown + sources list +
+FULL transcript with [mm:ss] stamps + Appendix B answer rules) with the
+"listener has heard up to ${mmss(positionMs)}" note appended; then
+`lastNChatTurns(episodeId, 6)`; then the user question.
 
 ```ts
-const response = await client.messages.create({
-  model: "claude-opus-4-8",
-  max_tokens: 1024,
-  system: [
-    { type: "text", text: groundingBlock(episode),          // dossier markdown + sources list + FULL transcript with [mm:ss] stamps + Appendix B answer rules
-      cache_control: { type: "ephemeral" } },               // stable per episode → cached across questions
-    { type: "text", text: `The listener has heard up to ${mmss(positionMs)}. Do not spoil later parts unless asked.` },
-  ],
-  messages: [...lastNChatTurns(episodeId, 6), { role: "user", content: question }],
-});
+const system =
+  groundingBlock(dossier, script) +
+  `\n\n(The listener has heard up to ${mmss(positionMs)}. Do not spoil later parts unless asked.)`;
+const answerText = await chatText([
+  { role: "system", content: system },
+  ...lastNChatTurns(episodeId, 6),
+  { role: "user", content: question },
+]);
 ```
 
 Persist both turns to `chats` (with `position_ms` on the user turn). Answer
 must come back as plain spoken prose (the Appendix B rules say no markdown,
-≤ 120 words) because it goes straight to TTS.
+≤ 120 words) because it goes straight to TTS. **No Anthropic-style prompt
+caching** — Ollama exposes no `cache_read_input_tokens`; it reuses its own KV
+cache server-side and we do not assert on it.
 
 Helper contracts (frozen; all live in `server/src/api/ask.ts` except noted):
 
@@ -490,8 +476,7 @@ script returns ≥ 1 claim and reaches `verified`; a poisoned-script test (a
 fixture script with one planted false claim not in the dossier) comes back
 non-supported with a revision; `classifyInput` unit tests (article/tweet/topic
 + rejects); `ask-text` against a seeded episode returns a non-empty answer and
-writes 2 chat rows; second ask-text call shows
-`usage.cache_read_input_tokens > 0` (log it).
+writes 2 chat rows per turn.
 
 ---
 
@@ -727,7 +712,9 @@ does not cover it, say so and answer from general knowledge, flagged as such.
 |---|---|---|---|
 | `PORT` | no (7900) | learn | `7900` |
 | `DATA_DIR` | no (`/data`) | learn | `/data` |
-| `ANTHROPIC_API_KEY` | yes | learn | `sk-ant-...` |
+| `OLLAMA_API_KEY` | yes | learn | Ollama Cloud key (ollama.com/settings/keys) |
+| `OLLAMA_HOST` | no (`https://ollama.com`) | learn | `https://ollama.com` |
+| `OLLAMA_MODEL` | no (`glm-5.2`) | learn | `glm-5.2` |
 | `FIRECRAWL_API_URL` | yes | learn | `http://firecrawl-api:3002` |
 | `FIRECRAWL_API_KEY` | yes | learn + firecrawl | self-set token |
 | `SPEECH_URL` | yes | learn | `http://speech:7910` |
@@ -747,7 +734,8 @@ provider is ever built (design.md §2.6).
 - [ ] Missing Range support → iOS scrubbing broken (M4 curl check).
 - [ ] Mic on plain http → getUserMedia rejects; HTTPS via tailscale serve only.
 - [ ] Wake-word recognition left armed during the answer → it hears itself.
-- [ ] `temperature` on claude-opus-4-8 → 400.
+- [ ] Trusting the model's structured reply blindly → always `JSON.parse` +
+      zod-validate the content (`chatJSON` does this; a mismatch → retry).
 - [ ] Buffering the answer TTS server-side → kills perceived latency; pipe.
 - [ ] Publishing firecrawl/speech ports → forbidden (design §2.11).
 - [ ] Reading `process.env` outside config.ts.
@@ -756,10 +744,11 @@ provider is ever built (design.md §2.6).
 - [ ] Fetching x.com/twitter.com through Firecrawl → blocked/garbage; tweets
       go through the resolver only.
 - [ ] Giving the script stage web search "to be helpful" → forbidden; only
-      research and topic-fact-check calls get tools.
+      research uses the web tools (the topic fact-check appends web evidence as
+      text, never tools).
 - [ ] Skipping or looping the fact-check stage → exactly one pass, one
       revision round, always stored; no bypass flag exists.
 - [ ] Topic with < 2 sources turned into an episode anyway → must fail with
       no_sources; never script from model memory.
-- [ ] Forgetting `pause_turn` handling on web-search calls → silently
-      truncated research briefs.
+- [ ] Forgetting to loop on `tool_calls` in research → the brief never gets
+      web results; loop until the assistant turn has no tool_calls (bounded).
