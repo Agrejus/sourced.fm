@@ -37,6 +37,9 @@ services:
       # :z relabels the host dir for SELinux (shared — speech mounts it too);
       # learn has no label=disable, so without this it is denied write access.
       - ../data:/data:z
+      # Host personas as editable markdown — edit on the host and the next
+      # episode picks it up (read fresh, no rebuild). Read-only into the container.
+      - ../server/personas:/srv/server/personas:ro,z
     depends_on:
       - firecrawl-api
       - speech

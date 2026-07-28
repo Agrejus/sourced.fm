@@ -246,11 +246,12 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
 - Target 10–15 min spoken (~1,500–2,200 words). HOST asks/reacts/summarizes;
   EXPERT explains. First segment: HOST cold-opens on why this matters.
   Last segment: HOST recaps 3 takeaways.
-- **Host profiles** (`server/src/hosts.ts`, `HOST_PROFILE`) are appended to the
-  script system prompt so every episode keeps the same two-host personas and
-  style. HOST is the female voice, EXPERT the male voice — keep genders aligned
-  with `speech/voices/`. Editing the profile is the one-place way to retune the
-  show's personality.
+- **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the
+  female voice) and `expert.md` (Sam, the male voice), read fresh each episode
+  by `hosts.ts` and appended to the script system prompt so every episode keeps
+  the same two-host personas and style. The personas dir is bind-mounted into
+  `learn` (read-only), so editing on the box retunes the show on the next
+  episode with no rebuild. Keep genders aligned with `speech/voices/`.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
   > 60 segments → stage error (backoff retry covers model flakiness).
 
