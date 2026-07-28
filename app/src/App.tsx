@@ -7,6 +7,18 @@ function mmss(ms: number): string {
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
+const HOSTS = "Maya & Sam";
+
+// Deterministic "cover art" gradient per episode so the library looks designed
+// without real artwork.
+function coverStyle(seed: string) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const a = h % 360;
+  const b = (a + 45) % 360;
+  return { backgroundImage: `linear-gradient(135deg, hsl(${a} 68% 52%), hsl(${b} 72% 40%))` };
+}
+
 const SpeechRecognitionImpl =
   (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
     .SpeechRecognition ??
@@ -258,8 +270,18 @@ export default function App() {
               className={`episode ${e.id === selectedId ? "active" : ""}`}
               onClick={() => setSelectedId(e.id)}
             >
-              <span className="etitle">{e.title || "(untitled)"}</span>
-              <span className={`badge ${e.status}`}>{e.status}</span>
+              <span className="cover sm" style={coverStyle(e.id)} aria-hidden="true">
+                <span className="cover-glyph">♫</span>
+              </span>
+              <span className="ep-meta">
+                <span className="etitle">{e.title || "Generating…"}</span>
+                <span className="ep-sub">
+                  <span className={`dot ${e.status}`} />
+                  {e.status === "ready" && e.durationMs ? mmss(e.durationMs) : e.status}
+                  {" · "}
+                  {e.sourceKind}
+                </span>
+              </span>
             </button>
           ))}
         </aside>
@@ -268,11 +290,23 @@ export default function App() {
           {!detail && <p className="muted">Select an episode.</p>}
           {detail && (
             <>
-              <h2>{detail.title || "(untitled)"}</h2>
-              <p className="muted">
-                {detail.sourceKind} · {detail.status}
-                {detail.error && ` · error: ${detail.error.message}`}
-              </p>
+              <div className="nowplaying">
+                <div className="cover lg" style={coverStyle(detail.id)} aria-hidden="true">
+                  <span className="cover-glyph">♫</span>
+                </div>
+                <div className="np-info">
+                  <span className="np-kind">{detail.sourceKind}</span>
+                  <h2>{detail.title || "(untitled)"}</h2>
+                  <span className="np-hosts">{HOSTS}</span>
+                  {detail.status !== "ready" && (
+                    <span className={`status-pill ${detail.status}`}>
+                      {detail.status === "failed"
+                        ? `failed${detail.error ? `: ${detail.error.message}` : ""}`
+                        : `${detail.status}…`}
+                    </span>
+                  )}
+                </div>
+              </div>
 
               {ready && (
                 <>
@@ -312,6 +346,11 @@ export default function App() {
                     value={Math.min(currentMs, durationMs || 0)}
                     onChange={(e) => seekToMs(Number(e.target.value))}
                     aria-label="Seek"
+                    style={{
+                      background: `linear-gradient(to right, var(--accent) ${
+                        durationMs ? (Math.min(currentMs, durationMs) / durationMs) * 100 : 0
+                      }%, var(--track) 0)`,
+                    }}
                   />
                   {micSupported ? (
                     <div className="voice">
@@ -347,11 +386,12 @@ export default function App() {
                       return (
                         <li
                           key={s.idx}
-                          className={active ? "seg active" : "seg"}
+                          className={`seg ${s.speaker.toLowerCase()}${active ? " active" : ""}`}
                           onClick={() => seekToMs(s.startMs ?? 0)}
                         >
-                          <span className="ts">{mmss(s.startMs ?? 0)}</span>{" "}
-                          <span className="who">{s.speaker}</span> {s.text}
+                          <span className="who">{s.speaker === "HOST" ? "Maya" : "Sam"}</span>
+                          <span className="seg-text">{s.text}</span>
+                          <span className="ts">{mmss(s.startMs ?? 0)}</span>
                         </li>
                       );
                     })}
