@@ -4,6 +4,7 @@ import type { Dossier } from "../fetchers/types";
 import type { Script } from "../domain";
 import { chatJSON } from "../llm";
 import { SCRIPT_SYSTEM_PROMPT } from "../prompts";
+import { hostProfileBlock } from "../hosts";
 import type { Stage } from "./stages";
 
 const ScriptSchema = z.object({
@@ -29,7 +30,8 @@ export function scriptStage(deps: { accessors: Accessors; now: () => number }): 
       if (!ep.dossier_json) throw new Error("script: episode has no dossier_json");
       const dossier = JSON.parse(ep.dossier_json) as Dossier;
 
-      const parsed = await chatJSON(ScriptSchema, SCRIPT_SYSTEM_PROMPT, dossier.markdown);
+      const system = `${SCRIPT_SYSTEM_PROMPT}\n\n${hostProfileBlock()}`;
+      const parsed = await chatJSON(ScriptSchema, system, dossier.markdown);
 
       const script: Script = {
         title: parsed.title,

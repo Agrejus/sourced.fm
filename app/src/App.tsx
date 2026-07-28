@@ -23,9 +23,10 @@ export default function App() {
   const [input, setInput] = useState("");
   const [question, setQuestion] = useState("");
   const [currentMs, setCurrentMs] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [wakeOn, setWakeOn] = useState(true);
+  const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [showClaims, setShowClaims] = useState(false);
 
@@ -215,6 +216,24 @@ export default function App() {
     };
   }, [ready, wakeOn, rearmWake, disarmWake]);
 
+  const durationMs = detail?.durationMs ?? 0;
+  function togglePlay() {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) void a.play();
+    else a.pause();
+  }
+  function seekBy(seconds: number) {
+    const a = audioRef.current;
+    if (a) a.currentTime = Math.max(0, Math.min(a.duration || 0, a.currentTime + seconds));
+  }
+  function seekToMs(ms: number) {
+    const a = audioRef.current;
+    if (!a) return;
+    a.currentTime = ms / 1000;
+    setCurrentMs(ms);
+  }
+
   return (
     <div className="app">
       <header>
@@ -260,8 +279,39 @@ export default function App() {
                   <audio
                     ref={audioRef}
                     src={api.audioUrl(detail.id)}
-                    controls
+                    preload="metadata"
                     onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onEnded={() => setPlaying(false)}
+                  />
+                  <div className="transport">
+                    <button className="skip" onClick={() => seekBy(-15)} aria-label="Back 15 seconds">
+                      ↺ 15
+                    </button>
+                    <button
+                      className="playpause"
+                      onClick={togglePlay}
+                      aria-label={playing ? "Pause" : "Play"}
+                    >
+                      {playing ? "⏸" : "▶"}
+                    </button>
+                    <button className="skip" onClick={() => seekBy(30)} aria-label="Forward 30 seconds">
+                      30 ↻
+                    </button>
+                    <span className="time">
+                      {mmss(currentMs)} / {mmss(durationMs)}
+                    </span>
+                  </div>
+                  <input
+                    className="seekbar"
+                    type="range"
+                    min={0}
+                    max={durationMs || 0}
+                    step={1000}
+                    value={Math.min(currentMs, durationMs || 0)}
+                    onChange={(e) => seekToMs(Number(e.target.value))}
+                    aria-label="Seek"
                   />
                   {micSupported ? (
                     <div className="voice">
@@ -295,7 +345,11 @@ export default function App() {
                       const active =
                         currentMs >= (s.startMs ?? 0) && (!next || currentMs < (next.startMs ?? Infinity));
                       return (
-                        <li key={s.idx} className={active ? "seg active" : "seg"}>
+                        <li
+                          key={s.idx}
+                          className={active ? "seg active" : "seg"}
+                          onClick={() => seekToMs(s.startMs ?? 0)}
+                        >
                           <span className="ts">{mmss(s.startMs ?? 0)}</span>{" "}
                           <span className="who">{s.speaker}</span> {s.text}
                         </li>

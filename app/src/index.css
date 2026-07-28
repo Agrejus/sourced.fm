@@ -219,3 +219,45 @@ button.link {
 .muted {
   color: var(--muted);
 }
+
+/* Custom audio transport — large, reliable tap targets (native iOS controls
+   are small and flaky). */
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 8px;
+}
+.playpause {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  font-size: 26px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.skip {
+  min-width: 60px;
+  min-height: 48px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  font-weight: 700;
+}
+.time {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.seekbar {
+  width: 100%;
+  height: 30px;
+  accent-color: var(--accent);
+}
+.seg {
+  cursor: pointer;
+}
+

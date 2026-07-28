@@ -246,6 +246,11 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
 - Target 10–15 min spoken (~1,500–2,200 words). HOST asks/reacts/summarizes;
   EXPERT explains. First segment: HOST cold-opens on why this matters.
   Last segment: HOST recaps 3 takeaways.
+- **Host profiles** (`server/src/hosts.ts`, `HOST_PROFILE`) are appended to the
+  script system prompt so every episode keeps the same two-host personas and
+  style. HOST is the female voice, EXPERT the male voice — keep genders aligned
+  with `speech/voices/`. Editing the profile is the one-place way to retune the
+  show's personality.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
   > 60 segments → stage error (backoff retry covers model flakiness).
 
@@ -330,9 +335,13 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 
 ### 2.9 PWA client behavior
 
-- **Playback**: `<audio>` + Media Session API (title/artwork/seek on lock
-  screen). `GET /api/episodes/:id/audio` must support `Range` (206) — iOS
-  scrubbing breaks without it; a non-206 partial response in dev is a bug.
+- **Playback**: `<audio>` (no native `controls`) driven by a **custom transport**
+  — large play/pause button, full-width scrubber, ±15/30s skip, tap-to-seek
+  transcript — because iOS's native audio controls are small and pause
+  unreliably (VERIFIED on device 2026-07-28). Media Session API still wires
+  lock-screen title/seek. `GET /api/episodes/:id/audio` must support `Range`
+  (206) — iOS scrubbing breaks without it; a non-206 partial response in dev is
+  a bug.
 - **Hold-to-talk**: press → `audio.pause()` → `MediaRecorder` → release → POST
   `/ask` → play answer stream → resume at saved position.
 - **Wake word ("question")**: while playing and `document.visibilityState ===
@@ -340,8 +349,10 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
   transcript containing the standalone word "question" triggers the
   hold-to-talk flow (pause → beep → record). Guards: `echoCancellation: true`;
   restart on iOS's ~60s recognition auto-stop (`onend` → `start()`); visible
-  "listening" indicator; settings toggle to disable. Fallback only if Web
-  Speech proves too flaky on iOS: Porcupine WASM custom keyword — do not build
+  "listening" indicator; settings toggle. **Default off (opt-in)** — an always-on
+  mic holds the iOS audio session open and can block normal play/pause, so the
+  user enables it explicitly (with headphones). Fallback only if Web Speech
+  proves too flaky on iOS: Porcupine WASM custom keyword — do not build
   preemptively.
 - **Submission**: one text box accepting an article URL, an X link, or a
   topic (classified server-side, §2.3); plus an iOS Shortcut POSTing the
