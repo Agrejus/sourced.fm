@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatTurn, type EpisodeDetail, type EpisodeListItem } from "./api";
 import { beep } from "./audio";
+import { loadPlaylists, newId, savePlaylists, type Playlist } from "./playlists";
 
 function mmss(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -47,12 +48,22 @@ export default function App() {
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
-  const [view, setView] = useState<"home" | "episodes">("home");
+  const [view, setView] = useState<"home" | "episodes" | "playlists">("home");
+
+  // Playlists (on-device). openPlaylistId drives the playlist-detail screen;
+  // queue is the running listen order that auto-advances when an episode ends.
+  const [playlists, setPlaylists] = useState<Playlist[]>(() => loadPlaylists());
+  const [openPlaylistId, setOpenPlaylistId] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [queue, setQueue] = useState<string[] | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recognitionRef = useRef<{ start: () => void; stop: () => void } | null>(null);
   const interruptingRef = useRef(false);
+  const autoplayRef = useRef(false); // request autoplay after the next detail loads
+
+  useEffect(() => savePlaylists(playlists), [playlists]);
 
   const loadEpisodes = useCallback(async () => {
     try {
@@ -101,6 +112,14 @@ export default function App() {
     navigator.mediaSession.setActionHandler("seekbackward", () => (audio.currentTime -= 15));
     navigator.mediaSession.setActionHandler("seekforward", () => (audio.currentTime += 30));
   }, [ready, detail]);
+
+  // When we advance through a queue, autoplay the episode once it's loaded.
+  useEffect(() => {
+    if (ready && autoplayRef.current) {
+      autoplayRef.current = false;
+      void audioRef.current?.play();
+    }
+  }, [ready]);
 
   async function submit() {
     const value = input.trim();
@@ -272,6 +291,71 @@ export default function App() {
     setTab("transcript");
   }
 
+  // ---- playlist mutations ----
+  function createPlaylist() {
+    const name = newName.trim();
+    if (!name) return;
+    const pl: Playlist = { id: newId(), name, episodeIds: [] };
+    setPlaylists((ps) => [...ps, pl]);
+    setNewName("");
+    setOpenPlaylistId(pl.id);
+  }
+  function deletePlaylist(id: string) {
+    setPlaylists((ps) => ps.filter((p) => p.id !== id));
+    setOpenPlaylistId(null);
+  }
+  function toggleInPlaylist(id: string, episodeId: string) {
+    setPlaylists((ps) =>
+      ps.map((p) =>
+        p.id !== id
+          ? p
+          : {
+              ...p,
+              episodeIds: p.episodeIds.includes(episodeId)
+                ? p.episodeIds.filter((e) => e !== episodeId)
+                : [...p.episodeIds, episodeId],
+            },
+      ),
+    );
+  }
+  function moveInPlaylist(id: string, index: number, dir: -1 | 1) {
+    setPlaylists((ps) =>
+      ps.map((p) => {
+        if (p.id !== id) return p;
+        const to = index + dir;
+        if (to < 0 || to >= p.episodeIds.length) return p;
+        const ids = [...p.episodeIds];
+        [ids[index], ids[to]] = [ids[to]!, ids[index]!];
+        return { ...p, episodeIds: ids };
+      }),
+    );
+  }
+  // Start a playlist: play from `startId` (or the first ready item) and set the
+  // running queue so playback auto-advances through the remaining episodes.
+  function playPlaylist(pl: Playlist, startId?: string) {
+    const playable = pl.episodeIds.filter((id) => {
+      const e = episodes.find((x) => x.id === id);
+      return e && e.status === "ready";
+    });
+    if (playable.length === 0) return;
+    const first = startId && playable.includes(startId) ? startId : playable[0]!;
+    setQueue(playable);
+    autoplayRef.current = true;
+    setSelectedId(first);
+  }
+  // Called when the current episode finishes — advance to the next queued item.
+  function handleEnded() {
+    setPlaying(false);
+    if (!queue || !selectedId) return;
+    const i = queue.indexOf(selectedId);
+    const next = i >= 0 ? queue[i + 1] : undefined;
+    if (next) {
+      autoplayRef.current = true;
+      setCurrentMs(0);
+      setSelectedId(next);
+    }
+  }
+
   // Which tabs have content to show on the player.
   const tabs = useMemo(() => {
     const t: Tab[] = [];
@@ -319,7 +403,7 @@ export default function App() {
 
     return (
       <div className="shell">
-        {view === "home" ? (
+        {view === "home" && (
           <div className="page">
             <div className="hero">
               <span className="hero-eyebrow" aria-hidden="true">
@@ -361,7 +445,8 @@ export default function App() {
               </section>
             )}
           </div>
-        ) : (
+        )}
+        {view === "episodes" && (
           <div className="page">
             <div className="page-head">
               <h1>Episodes</h1>
@@ -378,6 +463,176 @@ export default function App() {
             ) : (
               <ul className="cards">{sorted.map(card)}</ul>
             )}
+          </div>
+        )}
+        {view === "playlists" && (
+          <div className="page">
+            {(() => {
+              const open = playlists.find((p) => p.id === openPlaylistId) ?? null;
+              if (!open) {
+                return (
+                  <>
+                    <div className="page-head">
+                      <h1>Playlists</h1>
+                      <span className="count">{playlists.length}</span>
+                    </div>
+                    <div className="composer">
+                      <input
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && createPlaylist()}
+                        placeholder="New playlist name…"
+                      />
+                      <button className="btn-primary" onClick={createPlaylist} disabled={!newName.trim()}>
+                        Add
+                      </button>
+                    </div>
+                    {playlists.length === 0 ? (
+                      <div className="empty">
+                        <div className="empty-glyph" aria-hidden="true">
+                          ☰
+                        </div>
+                        <p>No playlists yet.</p>
+                        <p className="muted">
+                          Make one above, then add episodes to build a queue that plays through on its own.
+                        </p>
+                      </div>
+                    ) : (
+                      <ul className="cards">
+                        {playlists.map((p) => {
+                          const ready = p.episodeIds.filter(
+                            (id) => episodes.find((e) => e.id === id)?.status === "ready",
+                          ).length;
+                          return (
+                            <li key={p.id}>
+                              <button className="card" onClick={() => setOpenPlaylistId(p.id)}>
+                                <span className="card-art pl-art" aria-hidden="true">
+                                  <span className="card-glyph">☰</span>
+                                </span>
+                                <span className="card-body">
+                                  <span className="card-title">{p.name}</span>
+                                  <span className="card-meta">
+                                    <span className="kind-tag">
+                                      {p.episodeIds.length} episode{p.episodeIds.length === 1 ? "" : "s"}
+                                      {ready < p.episodeIds.length ? ` · ${ready} ready` : ""}
+                                    </span>
+                                  </span>
+                                </span>
+                                <span className="ep-chevron" aria-hidden="true">
+                                  ›
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </>
+                );
+              }
+
+              // ---- playlist detail ----
+              const inList = open.episodeIds
+                .map((id) => episodes.find((e) => e.id === id))
+                .filter((e): e is EpisodeListItem => !!e);
+              const readyCount = inList.filter((e) => e.status === "ready").length;
+              const addable = [...episodes]
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .filter((e) => !open.episodeIds.includes(e.id));
+              return (
+                <>
+                  <div className="detail-top">
+                    <button className="pill-btn" onClick={() => setOpenPlaylistId(null)}>
+                      ‹ Playlists
+                    </button>
+                    <button className="link danger" onClick={() => deletePlaylist(open.id)}>
+                      Delete
+                    </button>
+                  </div>
+                  <div className="page-head">
+                    <h1>{open.name}</h1>
+                  </div>
+                  <button
+                    className="btn-primary play-all"
+                    onClick={() => playPlaylist(open)}
+                    disabled={readyCount === 0}
+                  >
+                    ▶ Play all{readyCount > 0 ? ` (${readyCount})` : ""}
+                  </button>
+
+                  {inList.length === 0 ? (
+                    <p className="muted pl-hint">Empty — add episodes below.</p>
+                  ) : (
+                    <ol className="pl-items">
+                      {inList.map((e, i) => (
+                        <li key={e.id} className="pl-item">
+                          <span className="pl-index">{i + 1}</span>
+                          <button
+                            className="pl-main"
+                            onClick={() => e.status === "ready" && playPlaylist(open, e.id)}
+                            disabled={e.status !== "ready"}
+                          >
+                            <span className="pl-title">{e.title || "Generating…"}</span>
+                            <span className="pl-sub">
+                              {e.status === "ready"
+                                ? e.durationMs
+                                  ? mmss(e.durationMs)
+                                  : "ready"
+                                : e.status}{" "}
+                              · {e.sourceKind}
+                            </span>
+                          </button>
+                          <span className="pl-ctrls">
+                            <button
+                              aria-label="Move up"
+                              onClick={() => moveInPlaylist(open.id, i, -1)}
+                              disabled={i === 0}
+                            >
+                              ▲
+                            </button>
+                            <button
+                              aria-label="Move down"
+                              onClick={() => moveInPlaylist(open.id, i, 1)}
+                              disabled={i === inList.length - 1}
+                            >
+                              ▼
+                            </button>
+                            <button
+                              aria-label="Remove"
+                              className="pl-remove"
+                              onClick={() => toggleInPlaylist(open.id, e.id)}
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+
+                  {addable.length > 0 && (
+                    <section className="home-section">
+                      <div className="section-head">
+                        <h2>Add episodes</h2>
+                      </div>
+                      <ul className="add-list">
+                        {addable.map((e) => (
+                          <li key={e.id}>
+                            <button className="add-row" onClick={() => toggleInPlaylist(open.id, e.id)}>
+                              <span className="add-plus" aria-hidden="true">
+                                ＋
+                              </span>
+                              <span className="add-title">{e.title || "Generating…"}</span>
+                              <span className="kind-tag">{e.sourceKind}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -402,6 +657,19 @@ export default function App() {
             </span>
             Episodes
           </button>
+          <button
+            className={`tab-item ${view === "playlists" ? "on" : ""}`}
+            onClick={() => {
+              setOpenPlaylistId(null);
+              setView("playlists");
+            }}
+            aria-current={view === "playlists"}
+          >
+            <span className="ti-glyph" aria-hidden="true">
+              ☰
+            </span>
+            Playlists
+          </button>
         </nav>
       </div>
     );
@@ -423,7 +691,13 @@ export default function App() {
             </span>
             Episodes
           </button>
-          {detail && <span className="now-kind">{detail.sourceKind}</span>}
+          {queue && selectedId && queue.indexOf(selectedId) >= 0 ? (
+            <span className="now-kind">
+              Playlist · {queue.indexOf(selectedId) + 1}/{queue.length}
+            </span>
+          ) : (
+            detail && <span className="now-kind">{detail.sourceKind}</span>
+          )}
         </div>
 
         {!detail && <p className="loading muted">Loading…</p>}
@@ -461,7 +735,7 @@ export default function App() {
                   onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
                   onPlay={() => setPlaying(true)}
                   onPause={() => setPlaying(false)}
-                  onEnded={() => setPlaying(false)}
+                  onEnded={handleEnded}
                 />
                 <input
                   className="scrub"
