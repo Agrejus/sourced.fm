@@ -211,7 +211,11 @@ text body is `topic`.
   and appended under a `## Linked article` heading. `sources` = the tweet URL
   (+ linked article URL). A bare opinion tweet with no substance still makes
   an episode — the dossier honestly says it's one person's claim, and the
-  fact-check stage hedges accordingly.
+  fact-check stage hedges accordingly. **X native long-form Articles** are a
+  special case: the tweet's `text` is empty and the whole post lives in the
+  resolver's `article` field (title + Draft.js content blocks). We render those
+  blocks to markdown and the article *is* the dossier (`sources` = the article
+  URL); X walls the article page, so the resolver is the only way in.
 - **`topic` (research mode)** — an LLM agent loop with **Ollama's web
   search/fetch tools**: research the topic, prefer primary/recent sources, and
   write a structured brief where every claim carries its source. The dossier is

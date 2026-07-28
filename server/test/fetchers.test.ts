@@ -1,6 +1,11 @@
 import { test, expect } from "bun:test";
 import { parseFirecrawl } from "../src/fetchers/firecrawl";
-import { buildTweetDossier, tweetIdFromUrl, type FxTweet } from "../src/fetchers/tweet";
+import {
+  articleBlocksToMarkdown,
+  buildTweetDossier,
+  tweetIdFromUrl,
+  type FxTweet,
+} from "../src/fetchers/tweet";
 import firecrawlFixture from "./fixtures/firecrawl.json";
 import fxFixture from "./fixtures/fxtwitter.json";
 
@@ -70,5 +75,51 @@ test("buildTweetDossier renders a thread, quote, and linked article", () => {
   expect(dossier.sources).toEqual([
     { title: "Nora (@nora) on X", url: "https://x.com/n/status/1" },
     { title: "Linked article", url: "https://example.com/deep-dive" },
+  ]);
+});
+
+test("articleBlocksToMarkdown maps Draft.js block types", () => {
+  const md = articleBlocksToMarkdown([
+    { type: "header-one", text: "The Big Idea" },
+    { type: "unstyled", text: "A plain paragraph." },
+    { type: "blockquote", text: "a quote" },
+    { type: "unordered-list-item", text: "a bullet" },
+    { type: "atomic", text: " ", data: { urls: [{ text: "https://example.com/embed" }] } },
+    { type: "unknown-future-type", text: "kept as text" },
+    { type: "unstyled", text: "   " },
+  ]);
+  expect(md).toBe(
+    "## The Big Idea\n\nA plain paragraph.\n\n> a quote\n\n- a bullet\n\nhttps://example.com/embed\n\nkept as text",
+  );
+});
+
+test("buildTweetDossier renders an X native Article (empty text, article field)", () => {
+  const tweet: FxTweet = {
+    url: "https://x.com/IntuitMachine/status/2078419526354378975",
+    id: "2078419526354378975",
+    text: "",
+    author: { name: "Carlos E. Perez", screen_name: "IntuitMachine" },
+    replying_to: null,
+    replying_to_status: null,
+    article: {
+      title: "From Loop Engineering to Graph Engineering?",
+      content: {
+        blocks: [
+          { type: "header-one", text: "What the shift is really about" },
+          { type: "unstyled", text: "Loops optimize a single number; graphs model relationships." },
+        ],
+      },
+    },
+  };
+  const dossier = buildTweetDossier([tweet], null);
+  expect(dossier.title).toBe("From Loop Engineering to Graph Engineering?");
+  expect(dossier.markdown.startsWith("# From Loop Engineering to Graph Engineering?")).toBe(true);
+  expect(dossier.markdown).toContain("An X Article by Carlos E. Perez (@IntuitMachine).");
+  expect(dossier.markdown).toContain("## What the shift is really about");
+  expect(dossier.markdown).toContain("Loops optimize a single number");
+  // The empty-tweet "handle" header must NOT be what we ship.
+  expect(dossier.markdown).not.toContain("Carlos E. Perez (@IntuitMachine) on X");
+  expect(dossier.sources).toEqual([
+    { title: "From Loop Engineering to Graph Engineering?", url: tweet.url },
   ]);
 });
