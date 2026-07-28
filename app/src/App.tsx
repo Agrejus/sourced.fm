@@ -47,6 +47,7 @@ export default function App() {
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
+  const [view, setView] = useState<"home" | "episodes">("home");
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -281,79 +282,127 @@ export default function App() {
   }, [detail]);
   const activeTab: Tab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
 
-  // ================= LIBRARY =================
+  // ================= HOME / EPISODES (with bottom nav) =================
   if (selectedId === null) {
-    return (
-      <div className="home">
-        <header className="home-head">
-          <div className="brand">
-            <span className="brand-mark" aria-hidden="true">
-              ◉
-            </span>
-            <div>
-              <h1>Learn</h1>
-              <p className="tagline">Any link or idea, made listenable.</p>
-            </div>
-          </div>
-          <div className="composer">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="Paste an article, an X link, or a topic…"
-            />
-            <button className="btn-primary" onClick={submit} disabled={!input.trim()}>
-              Create
-            </button>
-          </div>
-        </header>
+    const sorted = [...episodes].sort((a, b) => b.createdAt - a.createdAt);
+    const generating = episodes.filter((e) => e.status !== "ready" && e.status !== "failed").length;
 
-        <section className="feed">
-          <div className="feed-label">
-            <span>Episodes</span>
-            <span className="count">{episodes.length}</span>
-          </div>
-          {episodes.length === 0 && (
-            <div className="empty">
-              <div className="empty-glyph" aria-hidden="true">
-                ♫
+    const card = (e: EpisodeListItem) => {
+      const busyState = e.status !== "ready" && e.status !== "failed";
+      return (
+        <li key={e.id}>
+          <button className="card" onClick={() => setSelectedId(e.id)}>
+            <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
+              <span className="card-glyph">{KIND_GLYPH[e.sourceKind] ?? "♫"}</span>
+              {e.status === "ready" && <span className="card-play">▶</span>}
+            </span>
+            <span className="card-body">
+              <span className="card-title">{e.title || "Generating…"}</span>
+              <span className="card-meta">
+                <span className={`chip ${e.status}`}>
+                  {busyState && <span className="spinner" aria-hidden="true" />}
+                  {e.status === "ready"
+                    ? e.durationMs
+                      ? mmss(e.durationMs)
+                      : "ready"
+                    : e.status === "failed"
+                      ? "failed"
+                      : e.status}
+                </span>
+                <span className="kind-tag">{e.sourceKind}</span>
+              </span>
+            </span>
+          </button>
+        </li>
+      );
+    };
+
+    return (
+      <div className="shell">
+        {view === "home" ? (
+          <div className="page">
+            <div className="hero">
+              <span className="hero-eyebrow" aria-hidden="true">
+                ◉ Learn
+              </span>
+              <h1 className="hero-title">Turn anything into a podcast you can actually listen to.</h1>
+              <p className="hero-sub">
+                Drop in an article, an X post, or just a topic. Maya &amp; Sam host a tight two-voice
+                episode — fact-checked, with sources — and you can jump in to ask questions while it plays.
+              </p>
+              <div className="composer big">
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  placeholder="Paste a link or type a topic…"
+                />
+                <button className="btn-primary" onClick={submit} disabled={!input.trim()}>
+                  Create
+                </button>
               </div>
-              <p>No episodes yet.</p>
-              <p className="muted">Paste a link or topic above and one will start generating.</p>
+              {generating > 0 && (
+                <p className="hero-status">
+                  <span className="spinner" aria-hidden="true" /> {generating} episode
+                  {generating > 1 ? "s" : ""} generating…
+                </p>
+              )}
             </div>
-          )}
-          <ul className="cards">
-            {episodes.map((e) => {
-              const busyState = e.status !== "ready" && e.status !== "failed";
-              return (
-                <li key={e.id}>
-                  <button className="card" onClick={() => setSelectedId(e.id)}>
-                    <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
-                      <span className="card-glyph">{KIND_GLYPH[e.sourceKind] ?? "♫"}</span>
-                      {e.status === "ready" && <span className="card-play">▶</span>}
-                    </span>
-                    <span className="card-body">
-                      <span className="card-title">{e.title || "Generating…"}</span>
-                      <span className="card-meta">
-                        <span className={`chip ${e.status}`}>
-                          {busyState && <span className="spinner" aria-hidden="true" />}
-                          {e.status === "ready"
-                            ? e.durationMs
-                              ? mmss(e.durationMs)
-                              : "ready"
-                            : e.status === "failed"
-                              ? "failed"
-                              : e.status}
-                        </span>
-                        <span className="kind-tag">{e.sourceKind}</span>
-                      </span>
-                    </span>
+
+            {sorted.length > 0 && (
+              <section className="home-section">
+                <div className="section-head">
+                  <h2>Jump back in</h2>
+                  <button className="see-all" onClick={() => setView("episodes")}>
+                    All episodes →
                   </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+                </div>
+                <ul className="cards">{sorted.slice(0, 3).map(card)}</ul>
+              </section>
+            )}
+          </div>
+        ) : (
+          <div className="page">
+            <div className="page-head">
+              <h1>Episodes</h1>
+              <span className="count">{episodes.length}</span>
+            </div>
+            {episodes.length === 0 ? (
+              <div className="empty">
+                <div className="empty-glyph" aria-hidden="true">
+                  ♫
+                </div>
+                <p>No episodes yet.</p>
+                <p className="muted">Head to Home and paste a link or topic to make your first one.</p>
+              </div>
+            ) : (
+              <ul className="cards">{sorted.map(card)}</ul>
+            )}
+          </div>
+        )}
+
+        <nav className="tabbar">
+          <button
+            className={`tab-item ${view === "home" ? "on" : ""}`}
+            onClick={() => setView("home")}
+            aria-current={view === "home"}
+          >
+            <span className="ti-glyph" aria-hidden="true">
+              ⌂
+            </span>
+            Home
+          </button>
+          <button
+            className={`tab-item ${view === "episodes" ? "on" : ""}`}
+            onClick={() => setView("episodes")}
+            aria-current={view === "episodes"}
+          >
+            <span className="ti-glyph" aria-hidden="true">
+              ♫
+            </span>
+            Episodes
+          </button>
+        </nav>
       </div>
     );
   }
