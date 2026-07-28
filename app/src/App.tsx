@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatTurn, type EpisodeDetail, type EpisodeListItem } from "./api";
 import { beep } from "./audio";
 
@@ -9,15 +9,19 @@ function mmss(ms: number): string {
 
 const HOSTS = "Maya & Sam";
 
-// Deterministic "cover art" gradient per episode so the library looks designed
-// without real artwork.
-function coverStyle(seed: string) {
+// Deterministic per-episode hue so every episode gets its own color world —
+// artwork gradient in the library, and the ambient wash + accent on the player.
+function hueOf(seed: string): number {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const a = h % 360;
-  const b = (a + 45) % 360;
-  return { backgroundImage: `linear-gradient(135deg, hsl(${a} 68% 52%), hsl(${b} 72% 40%))` };
+  return h % 360;
 }
+function coverStyle(seed: string) {
+  const a = hueOf(seed);
+  const b = (a + 40) % 360;
+  return { backgroundImage: `linear-gradient(140deg, hsl(${a} 74% 56%), hsl(${b} 70% 42%))` };
+}
+const KIND_GLYPH: Record<string, string> = { article: "¶", tweet: "𝕏", topic: "✦" };
 
 const SpeechRecognitionImpl =
   (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
@@ -26,6 +30,8 @@ const SpeechRecognitionImpl =
 
 const micSupported = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
 const wakeSupported = micSupported && !!SpeechRecognitionImpl;
+
+type Tab = "transcript" | "sources" | "facts";
 
 export default function App() {
   const [episodes, setEpisodes] = useState<EpisodeListItem[]>([]);
@@ -40,7 +46,7 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
-  const [showClaims, setShowClaims] = useState(false);
+  const [tab, setTab] = useState<Tab>("transcript");
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -72,7 +78,7 @@ export default function App() {
     if (!selectedId) return;
     void loadDetail(selectedId);
     // Keep refreshing while the open episode is still generating so the player
-    // page rolls from "generating…" to the ready transport without a manual reload.
+    // rolls from "generating…" to the ready transport without a manual reload.
     const t = setInterval(() => {
       setDetail((d) => {
         if (d && d.status !== "ready" && d.status !== "failed") void loadDetail(selectedId);
@@ -262,154 +268,239 @@ export default function App() {
     setDetail(null);
     setChats([]);
     setSelectedId(null);
+    setTab("transcript");
   }
 
-  // ---- Library view (list of episodes) ----
+  // Which tabs have content to show on the player.
+  const tabs = useMemo(() => {
+    const t: Tab[] = [];
+    if (detail?.script?.segments.length) t.push("transcript");
+    if (detail?.dossier?.sources.length) t.push("sources");
+    if (detail?.factcheck?.claims.length) t.push("facts");
+    return t;
+  }, [detail]);
+  const activeTab: Tab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
+
+  // ================= LIBRARY =================
   if (selectedId === null) {
     return (
-      <div className="app">
-        <header>
-          <h1>Learn</h1>
-          <div className="submit">
+      <div className="home">
+        <header className="home-head">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              ◉
+            </span>
+            <div>
+              <h1>Learn</h1>
+              <p className="tagline">Any link or idea, made listenable.</p>
+            </div>
+          </div>
+          <div className="composer">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="Article URL, X link, or a topic…"
+              placeholder="Paste an article, an X link, or a topic…"
             />
-            <button onClick={submit}>Make episode</button>
+            <button className="btn-primary" onClick={submit} disabled={!input.trim()}>
+              Create
+            </button>
           </div>
         </header>
 
-        <section className="library">
+        <section className="feed">
+          <div className="feed-label">
+            <span>Episodes</span>
+            <span className="count">{episodes.length}</span>
+          </div>
           {episodes.length === 0 && (
-            <p className="muted empty">No episodes yet — paste a link or topic above to make one.</p>
+            <div className="empty">
+              <div className="empty-glyph" aria-hidden="true">
+                ♫
+              </div>
+              <p>No episodes yet.</p>
+              <p className="muted">Paste a link or topic above and one will start generating.</p>
+            </div>
           )}
-          {episodes.map((e) => (
-            <button key={e.id} className="episode" onClick={() => setSelectedId(e.id)}>
-              <span className="cover sm" style={coverStyle(e.id)} aria-hidden="true">
-                <span className="cover-glyph">♫</span>
-              </span>
-              <span className="ep-meta">
-                <span className="etitle">{e.title || "Generating…"}</span>
-                <span className="ep-sub">
-                  <span className={`dot ${e.status}`} />
-                  {e.status === "ready" && e.durationMs ? mmss(e.durationMs) : e.status}
-                  {" · "}
-                  {e.sourceKind}
-                </span>
-              </span>
-              <span className="ep-chevron" aria-hidden="true">
-                ›
-              </span>
-            </button>
-          ))}
+          <ul className="cards">
+            {episodes.map((e) => {
+              const busyState = e.status !== "ready" && e.status !== "failed";
+              return (
+                <li key={e.id}>
+                  <button className="card" onClick={() => setSelectedId(e.id)}>
+                    <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
+                      <span className="card-glyph">{KIND_GLYPH[e.sourceKind] ?? "♫"}</span>
+                      {e.status === "ready" && <span className="card-play">▶</span>}
+                    </span>
+                    <span className="card-body">
+                      <span className="card-title">{e.title || "Generating…"}</span>
+                      <span className="card-meta">
+                        <span className={`chip ${e.status}`}>
+                          {busyState && <span className="spinner" aria-hidden="true" />}
+                          {e.status === "ready"
+                            ? e.durationMs
+                              ? mmss(e.durationMs)
+                              : "ready"
+                            : e.status === "failed"
+                              ? "failed"
+                              : e.status}
+                        </span>
+                        <span className="kind-tag">{e.sourceKind}</span>
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       </div>
     );
   }
 
-  // ---- Player view (one episode) ----
-  return (
-    <div className="app player-view">
-      <div className="playerbar">
-        <button className="back" onClick={goBack}>
-          ‹ Episodes
-        </button>
-      </div>
+  // ================= NOW PLAYING =================
+  const remainingMs = Math.max(0, durationMs - currentMs);
+  const progress = durationMs ? (Math.min(currentMs, durationMs) / durationMs) * 100 : 0;
+  const hue = detail ? hueOf(detail.id) : 260;
 
-      <main className="player">
-        {!detail && <p className="muted">Loading…</p>}
+  return (
+    <div className="now" style={{ ["--h" as string]: String(hue) } as React.CSSProperties}>
+      <div className="ambient" aria-hidden="true" />
+      <div className="now-inner">
+        <div className="now-top">
+          <button className="pill-btn back" onClick={goBack} aria-label="Back to episodes">
+            <span className="chev-down" aria-hidden="true">
+              ⌄
+            </span>
+            Episodes
+          </button>
+          {detail && <span className="now-kind">{detail.sourceKind}</span>}
+        </div>
+
+        {!detail && <p className="loading muted">Loading…</p>}
+
         {detail && (
           <>
-              <div className="nowplaying">
-                <div className="cover lg" style={coverStyle(detail.id)} aria-hidden="true">
-                  <span className="cover-glyph">♫</span>
-                </div>
-                <div className="np-info">
-                  <span className="np-kind">{detail.sourceKind}</span>
-                  <h2>{detail.title || "(untitled)"}</h2>
-                  <span className="np-hosts">{HOSTS}</span>
-                  {detail.status !== "ready" && (
-                    <span className={`status-pill ${detail.status}`}>
-                      {detail.status === "failed"
-                        ? `failed${detail.error ? `: ${detail.error.message}` : ""}`
-                        : `${detail.status}…`}
-                    </span>
-                  )}
-                </div>
+            <div className="stage">
+              <div className="art" style={coverStyle(detail.id)}>
+                <span className="art-glyph" aria-hidden="true">
+                  {KIND_GLYPH[detail.sourceKind] ?? "♫"}
+                </span>
               </div>
-
-              {ready && (
-                <>
-                  <audio
-                    ref={audioRef}
-                    src={api.audioUrl(detail.id)}
-                    preload="metadata"
-                    onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
-                    onPlay={() => setPlaying(true)}
-                    onPause={() => setPlaying(false)}
-                    onEnded={() => setPlaying(false)}
-                  />
-                  <div className="transport">
-                    <button className="skip" onClick={() => seekBy(-15)} aria-label="Back 15 seconds">
-                      ↺ 15
-                    </button>
-                    <button
-                      className="playpause"
-                      onClick={togglePlay}
-                      aria-label={playing ? "Pause" : "Play"}
-                    >
-                      {playing ? "⏸" : "▶"}
-                    </button>
-                    <button className="skip" onClick={() => seekBy(30)} aria-label="Forward 30 seconds">
-                      30 ↻
-                    </button>
-                    <span className="time">
-                      {mmss(currentMs)} / {mmss(durationMs)}
-                    </span>
-                  </div>
-                  <input
-                    className="seekbar"
-                    type="range"
-                    min={0}
-                    max={durationMs || 0}
-                    step={1000}
-                    value={Math.min(currentMs, durationMs || 0)}
-                    onChange={(e) => seekToMs(Number(e.target.value))}
-                    aria-label="Seek"
-                    style={{
-                      background: `linear-gradient(to right, var(--accent) ${
-                        durationMs ? (Math.min(currentMs, durationMs) / durationMs) * 100 : 0
-                      }%, var(--track) 0)`,
-                    }}
-                  />
-                  {micSupported ? (
-                    <div className="voice">
-                      <button
-                        className={`talk ${recording ? "rec" : ""}`}
-                        onMouseDown={startRecording}
-                        onMouseUp={stopRecording}
-                        onTouchStart={(e) => {
-                          e.preventDefault();
-                          void startRecording();
-                        }}
-                        onTouchEnd={stopRecording}
-                        disabled={busy}
-                      >
-                        {recording ? "● recording — release to ask" : "Hold to ask"}
-                      </button>
-                      {wakeSupported && (
-                        <label className="wake">
-                          <input type="checkbox" checked={wakeOn} onChange={(e) => setWakeOn(e.target.checked)} />
-                          wake word “question”{listening ? " · listening" : ""}
-                        </label>
-                      )}
-                    </div>
+              <h1 className="now-title">{detail.title || "(untitled)"}</h1>
+              <p className="now-hosts">{HOSTS}</p>
+              {detail.status !== "ready" && (
+                <span className={`state ${detail.status}`}>
+                  {detail.status === "failed" ? (
+                    `Failed${detail.error ? ` · ${detail.error.message}` : ""}`
                   ) : (
-                    <p className="muted">Voice needs the Tailscale HTTPS address.</p>
+                    <>
+                      <span className="spinner light" aria-hidden="true" />
+                      {detail.status}…
+                    </>
                   )}
+                </span>
+              )}
+            </div>
 
+            {ready && (
+              <div className="controls">
+                <audio
+                  ref={audioRef}
+                  src={api.audioUrl(detail.id)}
+                  preload="metadata"
+                  onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
+                  onPlay={() => setPlaying(true)}
+                  onPause={() => setPlaying(false)}
+                  onEnded={() => setPlaying(false)}
+                />
+                <input
+                  className="scrub"
+                  type="range"
+                  min={0}
+                  max={durationMs || 0}
+                  step={1000}
+                  value={Math.min(currentMs, durationMs || 0)}
+                  onChange={(e) => seekToMs(Number(e.target.value))}
+                  aria-label="Seek"
+                  style={{
+                    background: `linear-gradient(to right, hsl(var(--h) 90% 62%) ${progress}%, rgba(255,255,255,0.14) ${progress}%)`,
+                  }}
+                />
+                <div className="times">
+                  <span>{mmss(currentMs)}</span>
+                  <span>-{mmss(remainingMs)}</span>
+                </div>
+                <div className="transport">
+                  <button className="tp-skip" onClick={() => seekBy(-15)} aria-label="Back 15 seconds">
+                    <span className="tp-num">15</span>↺
+                  </button>
+                  <button
+                    className="tp-play"
+                    onClick={togglePlay}
+                    aria-label={playing ? "Pause" : "Play"}
+                  >
+                    {playing ? "❚❚" : "▶"}
+                  </button>
+                  <button className="tp-skip" onClick={() => seekBy(30)} aria-label="Forward 30 seconds">
+                    <span className="tp-num">30</span>↻
+                  </button>
+                </div>
+
+                {micSupported ? (
+                  <div className="voice">
+                    <button
+                      className={`talk ${recording ? "rec" : ""}`}
+                      onMouseDown={startRecording}
+                      onMouseUp={stopRecording}
+                      onTouchStart={(e) => {
+                        e.preventDefault();
+                        void startRecording();
+                      }}
+                      onTouchEnd={stopRecording}
+                      disabled={busy}
+                    >
+                      {recording ? "● Recording — release to ask" : "🎙 Hold to ask"}
+                    </button>
+                    {wakeSupported && (
+                      <label className="wake">
+                        <input
+                          type="checkbox"
+                          checked={wakeOn}
+                          onChange={(e) => setWakeOn(e.target.checked)}
+                        />
+                        <span className="wake-track" aria-hidden="true">
+                          <span className="wake-knob" />
+                        </span>
+                        wake word “question”{listening ? " · listening" : ""}
+                      </label>
+                    )}
+                  </div>
+                ) : (
+                  <p className="muted voice-note">Voice needs the Tailscale HTTPS address.</p>
+                )}
+              </div>
+            )}
+
+            {activeTab && (
+              <div className="panel">
+                {tabs.length > 1 && (
+                  <div className="tabs" role="tablist">
+                    {tabs.map((t) => (
+                      <button
+                        key={t}
+                        role="tab"
+                        aria-selected={activeTab === t}
+                        className={`tab ${activeTab === t ? "on" : ""}`}
+                        onClick={() => setTab(t)}
+                      >
+                        {t === "transcript" ? "Transcript" : t === "sources" ? "Sources" : "Fact-check"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {activeTab === "transcript" && (
                   <ol className="transcript">
                     {detail.script!.segments.map((s) => {
                       const next = detail.script!.segments[s.idx + 1];
@@ -421,54 +512,49 @@ export default function App() {
                           className={`seg ${s.speaker.toLowerCase()}${active ? " active" : ""}`}
                           onClick={() => seekToMs(s.startMs ?? 0)}
                         >
-                          <span className="who">{s.speaker === "HOST" ? "Maya" : "Sam"}</span>
+                          <span className="seg-who">{s.speaker === "HOST" ? "Maya" : "Sam"}</span>
                           <span className="seg-text">{s.text}</span>
-                          <span className="ts">{mmss(s.startMs ?? 0)}</span>
+                          <span className="seg-ts">{mmss(s.startMs ?? 0)}</span>
                         </li>
                       );
                     })}
                   </ol>
-                </>
-              )}
+                )}
 
-              {detail.dossier && (
-                <section className="sources">
-                  <h3>Sources</h3>
-                  <ul>
-                    {detail.dossier.sources.map((s, i) => (
+                {activeTab === "sources" && (
+                  <ul className="sources">
+                    {detail.dossier!.sources.map((s, i) => (
                       <li key={i}>
                         <a href={s.url} target="_blank" rel="noreferrer">
-                          {s.title}
+                          <span className="src-num">{i + 1}</span>
+                          <span className="src-title">{s.title}</span>
+                          <span className="src-go" aria-hidden="true">
+                            ↗
+                          </span>
                         </a>
                       </li>
                     ))}
                   </ul>
-                </section>
-              )}
+                )}
 
-              {detail.factcheck && detail.factcheck.claims.length > 0 && (
-                <section className="factcheck">
-                  <button className="link" onClick={() => setShowClaims((v) => !v)}>
-                    {showClaims ? "▾" : "▸"} Fact-check ({detail.factcheck.claims.length} claims)
-                  </button>
-                  {showClaims && (
-                    <table>
-                      <tbody>
-                        {detail.factcheck.claims.map((c, i) => (
-                          <tr key={i}>
-                            <td className={`verdict ${c.verdict}`}>{c.verdict}</td>
-                            <td>{c.claim}</td>
-                            <td className="muted">{c.note}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              )}
-              {ready && (
-                <section className="ask">
-                  <h3>Ask about this episode</h3>
+                {activeTab === "facts" && (
+                  <ul className="facts">
+                    {detail.factcheck!.claims.map((c, i) => (
+                      <li key={i} className="fact">
+                        <span className={`verdict ${c.verdict}`}>{c.verdict}</span>
+                        <span className="fact-claim">{c.claim}</span>
+                        {c.note && <span className="fact-note">{c.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {ready && (
+              <div className="ask">
+                <h3>Ask about this episode</h3>
+                {chats.length > 0 && (
                   <div className="turns">
                     {chats.map((t, i) => (
                       <div key={i} className={`turn ${t.role}`}>
@@ -476,23 +562,24 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div className="asktext">
-                    <input
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && sendQuestion()}
-                      placeholder="Type a question about this episode…"
-                      disabled={busy}
-                    />
-                    <button onClick={sendQuestion} disabled={busy}>
-                      {busy ? "…" : "Ask"}
-                    </button>
-                  </div>
-                </section>
-              )}
-            </>
-          )}
-        </main>
+                )}
+                <div className="ask-bar">
+                  <input
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && sendQuestion()}
+                    placeholder="Type a question…"
+                    disabled={busy}
+                  />
+                  <button className="btn-primary" onClick={sendQuestion} disabled={busy || !question.trim()}>
+                    {busy ? "…" : "Ask"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
