@@ -26,7 +26,9 @@ const FactcheckSchema = z.object({
       }),
     )
     .min(6)
-    .max(60)
+    // Must match the script schema's cap — deep dives run long; the revised
+    // script is a full replacement and can have just as many segments.
+    .max(400)
     .optional(), // REQUIRED iff any verdict !== "supported"
 });
 
