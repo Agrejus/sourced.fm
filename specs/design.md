@@ -256,8 +256,10 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   prompt sets no word/minute target and forbids padding or compressing. HOST
   asks/reacts/summarizes and EXPERT explains a level deeper than the source
   states it (mechanisms, examples, tradeoffs, a counterargument) — all still
-  grounded strictly in the dossier. First segment: HOST cold-opens on why this
-  matters. Last segment: HOST recaps the 3–5 most important takeaways.
+  grounded strictly in the dossier. Opening: a short branded intro — HOST
+  welcomes listeners to "Learn," the two hosts introduce themselves by name
+  (from the personas), and HOST tees up the topic — then into the substance.
+  Last segment: HOST recaps the 3–5 most important takeaways and signs off.
 - **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the
   female voice) and `expert.md` (Sam, the male voice), read fresh each episode
   by `hosts.ts` and appended to the script system prompt so every episode keeps

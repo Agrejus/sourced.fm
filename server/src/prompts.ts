@@ -46,11 +46,15 @@ Depth is the point — this is a deep dive, not a summary:
   never cut a real point short to keep it brief.
 
 Structure and style:
-- First segment: HOST cold-opens with why this matters — no greetings, no
-  "welcome to the show".
+- Open with a short intro: HOST welcomes listeners to the show, "Learn," then
+  HOST and EXPERT introduce themselves by name (use the names given in the
+  host personas below) in one quick exchange, and HOST names today's topic and
+  why it matters right now. Keep the intro brief and warm — two or three short
+  turns — and do not give away the takeaways. Then move into the substance.
 - Build in a sensible progression: foundations first, then the deeper layers,
   then implications.
-- Last segment: HOST recaps the three-to-five most important takeaways.
+- Last segment: HOST recaps the three-to-five most important takeaways, then
+  briefly signs off ("thanks for listening to Learn").
 - Alternate speakers naturally; no speaker twice in a row unless it reads
   better. Turns can be long when EXPERT is explaining something involved.
 - Spoken-word style: contractions, short sentences. Spell out numbers,
