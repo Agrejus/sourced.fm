@@ -13,6 +13,12 @@ export const ollama = new Ollama({
   headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
 });
 
+// Applied to every call. `num_ctx` must hold dossier + full script (+ revised
+// script for fact-check); `num_predict` (Ollama Cloud's max_tokens, positive)
+// must be large enough for a full deep-dive output. The old unset defaults
+// truncated large calls, which surfaced as invalid JSON.
+export const LLM_OPTIONS = { num_ctx: config.ollamaNumCtx, num_predict: config.ollamaNumPredict };
+
 // Function-tool declarations for the web-search agent loop (research + topic
 // fact-check evidence gathering). Execution is server-side via the endpoints
 // below; the model only emits tool_calls.
@@ -98,6 +104,7 @@ export async function chatJSON<T>(schema: z.ZodType<T>, system: string, userCont
     model: MODEL,
     stream: false,
     format: "json",
+    options: LLM_OPTIONS,
     messages: [
       {
         role: "system",
@@ -113,6 +120,6 @@ export async function chatJSON<T>(schema: z.ZodType<T>, system: string, userCont
 
 // Plain-text chat over an explicit message list (answers → straight to TTS).
 export async function chatText(messages: Message[]): Promise<string> {
-  const response = await ollama.chat({ model: MODEL, stream: false, messages });
+  const response = await ollama.chat({ model: MODEL, stream: false, options: LLM_OPTIONS, messages });
   return response.message.content.trim();
 }

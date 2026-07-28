@@ -217,10 +217,14 @@ text body is `topic`.
   blocks to markdown and the article *is* the dossier (`sources` = the article
   URL); X walls the article page, so the resolver is the only way in.
 - **`topic` (research mode)** — an LLM agent loop with **Ollama's web
-  search/fetch tools**: research the topic, prefer primary/recent sources, and
-  write a structured brief where every claim carries its source. The dossier is
-  the brief; `sources` come from the tool results. A topic that turns up no
-  usable sources is a `FetchError`, not a made-up episode.
+  search/fetch tools**: research the topic from several angles, prefer
+  primary/recent sources, and write a **comprehensive** structured brief
+  (~2,500–4,000 words, sectioned: facts, mechanism, state of the art/debate,
+  tradeoffs, a misconception, a counterargument) where every claim carries its
+  source. The brief is the only material the episode is built from, so it must
+  be deep enough to support a long discussion. The dossier is the brief;
+  `sources` come from the tool results. A topic that turns up no usable sources
+  is a `FetchError`, not a made-up episode.
 
 ### 2.4 Storage (bun:sqlite, WAL mode)
 
@@ -247,9 +251,13 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
 - One LLM call (Ollama, structured output): `{title, segments:[{speaker,text}]}`.
   The user content is the **dossier markdown only** — the script may not draw
   on anything else, and the prompt forbids inventing facts beyond it.
-- Target 10–15 min spoken (~1,500–2,200 words). HOST asks/reacts/summarizes;
-  EXPERT explains. First segment: HOST cold-opens on why this matters.
-  Last segment: HOST recaps 3 takeaways.
+- **Deep dive, no length cap.** The script covers the dossier thoroughly and
+  runs as long as the material warrants (a rich source → often 30+ min); the
+  prompt sets no word/minute target and forbids padding or compressing. HOST
+  asks/reacts/summarizes and EXPERT explains a level deeper than the source
+  states it (mechanisms, examples, tradeoffs, a counterargument) — all still
+  grounded strictly in the dossier. First segment: HOST cold-opens on why this
+  matters. Last segment: HOST recaps the 3–5 most important takeaways.
 - **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the
   female voice) and `expert.md` (Sam, the male voice), read fresh each episode
   by `hosts.ts` and appended to the script system prompt so every episode keeps
@@ -257,7 +265,13 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   `learn` (read-only), so editing on the box retunes the show on the next
   episode with no rebuild. Keep genders aligned with `speech/voices/`.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
-  > 60 segments → stage error (backoff retry covers model flakiness).
+  > 400 segments → stage error (a runaway guard, not a target; backoff retry
+  covers model flakiness).
+- **Context window.** Every Ollama call sets `num_ctx` (`OLLAMA_NUM_CTX`,
+  default 65536) and `num_predict: -1`. A deep-dive script plus the fact-check
+  stage's full revised script are large; the previously-unset context default
+  truncated big calls, surfacing as invalid JSON. `num_ctx` must hold dossier
+  + full script (+ revised script for fact-check).
 
 ### 2.5b Fact-check stage (scripted → verified)
 

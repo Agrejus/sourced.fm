@@ -17,7 +17,9 @@ const ScriptSchema = z.object({
       }),
     )
     .min(6)
-    .max(60),
+    // Deep dives run long; this bound only guards against a pathological
+    // runaway, it is not a target (see SCRIPT_SYSTEM_PROMPT — no length cap).
+    .max(400),
 });
 
 // sourced -> scripted. The user content is dossier.markdown and NOTHING else —

@@ -1,5 +1,5 @@
 import type { Message } from "ollama";
-import { ollama, MODEL, WEB_TOOLS, webSearch, webFetch } from "../llm";
+import { ollama, MODEL, WEB_TOOLS, LLM_OPTIONS, webSearch, webFetch } from "../llm";
 import { RESEARCH_SYSTEM_PROMPT } from "../prompts";
 import type { FetchResult, SourceFetcher, SourceInput } from "./types";
 
@@ -25,7 +25,13 @@ export const researchFetcher: SourceFetcher = {
 
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-        const response = await ollama.chat({ model: MODEL, stream: false, tools: WEB_TOOLS, messages });
+        const response = await ollama.chat({
+          model: MODEL,
+          stream: false,
+          tools: WEB_TOOLS,
+          options: LLM_OPTIONS,
+          messages,
+        });
         const msg = response.message;
         messages.push(msg);
 

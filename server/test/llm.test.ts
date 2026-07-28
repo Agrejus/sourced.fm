@@ -104,7 +104,7 @@ live("script stage produces a valid script from a dossier", async () => {
   expect(after.status).toBe("scripted");
   const script = JSON.parse(after.script_json!) as Script;
   expect(script.segments.length).toBeGreaterThanOrEqual(6);
-  expect(script.segments.length).toBeLessThanOrEqual(60);
+  expect(script.segments.length).toBeLessThanOrEqual(400);
   const speakers = new Set(script.segments.map((s) => s.speaker));
   expect(speakers.has("HOST")).toBe(true);
   expect(speakers.has("EXPERT")).toBe(true);
