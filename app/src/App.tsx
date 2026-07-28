@@ -69,7 +69,17 @@ export default function App() {
   }, [loadEpisodes]);
 
   useEffect(() => {
-    if (selectedId) void loadDetail(selectedId);
+    if (!selectedId) return;
+    void loadDetail(selectedId);
+    // Keep refreshing while the open episode is still generating so the player
+    // page rolls from "generating…" to the ready transport without a manual reload.
+    const t = setInterval(() => {
+      setDetail((d) => {
+        if (d && d.status !== "ready" && d.status !== "failed") void loadDetail(selectedId);
+        return d;
+      });
+    }, 5000);
+    return () => clearInterval(t);
   }, [selectedId, loadDetail]);
 
   const ready = detail?.status === "ready" && detail.script;
@@ -245,31 +255,38 @@ export default function App() {
     a.currentTime = ms / 1000;
     setCurrentMs(ms);
   }
+  function goBack() {
+    audioRef.current?.pause();
+    setPlaying(false);
+    setCurrentMs(0);
+    setDetail(null);
+    setChats([]);
+    setSelectedId(null);
+  }
 
-  return (
-    <div className="app">
-      <header>
-        <h1>Learn</h1>
-        <div className="submit">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-            placeholder="Article URL, X link, or a topic…"
-          />
-          <button onClick={submit}>Make episode</button>
-        </div>
-      </header>
+  // ---- Library view (list of episodes) ----
+  if (selectedId === null) {
+    return (
+      <div className="app">
+        <header>
+          <h1>Learn</h1>
+          <div className="submit">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder="Article URL, X link, or a topic…"
+            />
+            <button onClick={submit}>Make episode</button>
+          </div>
+        </header>
 
-      <div className="body">
-        <aside className="episodes">
-          {episodes.length === 0 && <p className="muted">No episodes yet.</p>}
+        <section className="library">
+          {episodes.length === 0 && (
+            <p className="muted empty">No episodes yet — paste a link or topic above to make one.</p>
+          )}
           {episodes.map((e) => (
-            <button
-              key={e.id}
-              className={`episode ${e.id === selectedId ? "active" : ""}`}
-              onClick={() => setSelectedId(e.id)}
-            >
+            <button key={e.id} className="episode" onClick={() => setSelectedId(e.id)}>
               <span className="cover sm" style={coverStyle(e.id)} aria-hidden="true">
                 <span className="cover-glyph">♫</span>
               </span>
@@ -282,14 +299,29 @@ export default function App() {
                   {e.sourceKind}
                 </span>
               </span>
+              <span className="ep-chevron" aria-hidden="true">
+                ›
+              </span>
             </button>
           ))}
-        </aside>
+        </section>
+      </div>
+    );
+  }
 
-        <main className="player">
-          {!detail && <p className="muted">Select an episode.</p>}
-          {detail && (
-            <>
+  // ---- Player view (one episode) ----
+  return (
+    <div className="app player-view">
+      <div className="playerbar">
+        <button className="back" onClick={goBack}>
+          ‹ Episodes
+        </button>
+      </div>
+
+      <main className="player">
+        {!detail && <p className="muted">Loading…</p>}
+        {detail && (
+          <>
               <div className="nowplaying">
                 <div className="cover lg" style={coverStyle(detail.id)} aria-hidden="true">
                   <span className="cover-glyph">♫</span>
@@ -434,35 +466,33 @@ export default function App() {
                   )}
                 </section>
               )}
+              {ready && (
+                <section className="ask">
+                  <h3>Ask about this episode</h3>
+                  <div className="turns">
+                    {chats.map((t, i) => (
+                      <div key={i} className={`turn ${t.role}`}>
+                        {t.text}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="asktext">
+                    <input
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && sendQuestion()}
+                      placeholder="Type a question about this episode…"
+                      disabled={busy}
+                    />
+                    <button onClick={sendQuestion} disabled={busy}>
+                      {busy ? "…" : "Ask"}
+                    </button>
+                  </div>
+                </section>
+              )}
             </>
           )}
         </main>
-
-        <aside className="chat">
-          <h3>Ask</h3>
-          <div className="turns">
-            {chats.map((t, i) => (
-              <div key={i} className={`turn ${t.role}`}>
-                {t.text}
-              </div>
-            ))}
-          </div>
-          {ready && (
-            <div className="asktext">
-              <input
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendQuestion()}
-                placeholder="Type a question…"
-                disabled={busy}
-              />
-              <button onClick={sendQuestion} disabled={busy}>
-                {busy ? "…" : "Ask"}
-              </button>
-            </div>
-          )}
-        </aside>
-      </div>
     </div>
   );
 }

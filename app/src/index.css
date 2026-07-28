@@ -115,52 +115,79 @@ button.link {
   font-weight: 600;
 }
 
-/* ---------- layout ---------- */
-.body {
+/* ---------- library view ---------- */
+.app {
+  max-width: 720px;
+}
+.library {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
+  padding-top: 6px;
 }
-@media (min-width: 1000px) {
-  .body {
-    display: grid;
-    grid-template-columns: 300px 1fr 340px;
-    align-items: start;
-  }
-}
-
-/* ---------- episode library ---------- */
-.episodes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-@media (max-width: 999px) {
-  .episodes {
-    max-height: 34vh;
-    overflow-y: auto;
-    padding-right: 4px;
-  }
+.empty {
+  text-align: center;
+  padding: 40px 0;
 }
 .episode {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+  width: 100%;
   background: var(--panel);
   color: var(--text);
-  border: 1px solid transparent;
-  border-radius: 14px;
-  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 14px 10px 10px;
   text-align: left;
   font-weight: 500;
   transition: background 0.15s, border-color 0.15s, transform 0.08s;
 }
 .episode:hover {
   background: var(--panel-2);
+  transform: translateY(-1px);
 }
-.episode.active {
-  border-color: var(--accent);
-  background: var(--panel-2);
+.episode:active {
+  transform: scale(0.99);
+}
+.ep-chevron {
+  margin-left: auto;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--muted);
+  flex: none;
+}
+
+/* ---------- player view ---------- */
+.player-view {
+  max-width: 720px;
+}
+.playerbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 12px 0;
+  background: linear-gradient(var(--bg), rgba(11, 10, 15, 0.85));
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.back {
+  background: none;
+  color: var(--text);
+  padding: 8px 12px 8px 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.back:hover {
+  filter: none;
+  color: var(--accent);
+}
+.player-view .player {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
 }
 .ep-meta {
   display: flex;
@@ -256,26 +283,27 @@ button.link {
   color: var(--red);
 }
 
-/* ---------- panels ---------- */
-.player,
-.chat {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 18px;
-  box-shadow: var(--shadow);
-}
-
 /* ---------- now playing ---------- */
 .nowplaying {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  gap: 14px;
   align-items: center;
-  margin-bottom: 14px;
+  text-align: center;
+  margin: 8px 0 20px;
+}
+.cover.lg {
+  width: 200px;
+  height: 200px;
+  border-radius: 22px;
+}
+.cover.lg .cover-glyph {
+  font-size: 64px;
 }
 .np-info {
   display: flex;
   flex-direction: column;
+  align-items: center;
   min-width: 0;
 }
 .np-kind {
@@ -505,17 +533,24 @@ button.link {
   color: var(--amber);
 }
 
-/* ---------- chat / ask ---------- */
-.chat h3 {
+/* ---------- ask ---------- */
+.ask {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.ask h3 {
   margin: 0 0 12px;
   font-size: 16px;
 }
-.chat .turns {
+.ask .turns {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 120px;
   margin-bottom: 12px;
+}
+.ask .turns:empty {
+  min-height: 0;
 }
 .turn {
   padding: 10px 13px;
