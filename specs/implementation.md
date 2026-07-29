@@ -56,6 +56,7 @@ server/            (bun init; Hono)
   src/index.ts     boots config → db → http → worker; crashes on bad config
   src/config.ts    parse env ONCE at boot (see env table, Appendix C)
   src/db.ts        bun:sqlite, WAL mode, schema from Appendix A, migrations = CREATE TABLE IF NOT EXISTS
+                   plus ADD_COLUMNS (guarded ALTER TABLE ... ADD COLUMN) for columns added after a db exists
 app/               (bun create vite → react-ts template)
 speech/            Python 3.11, FastAPI (see M1)
 deploy/            compose.yml + README.md (box setup)
@@ -213,7 +214,11 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
 `db.ts` exposes typed functions only — no raw SQL outside this file:
 `insertEpisode`, `getEpisode`, `listEpisodes`, `claimNextPipelineEpisode`,
 `updateEpisodeStage` (asserts expected prior status — throws on mismatch),
-`failEpisode`, `insertChat`, `listChats`.
+`failEpisode`, `setEpisodeListened`, `insertChat`, `listChats`.
+
+Listened state is user bookkeeping, not a pipeline stage: `listened_at` is
+outside `PATCH_COLUMNS`, so a stage transition can never touch it and marking
+an episode listened can never move it through the pipeline.
 
 ### 2.2 SourceFetcher trio (design.md §2.3, frozen interfaces)
 
@@ -488,8 +493,9 @@ writes 2 chat rows per turn.
 |---|---|---|
 | `GET /api/healthz` | — | `{"ok":true}` |
 | `POST /api/episodes` | JSON `{input: "<url or topic text>"}` **or** raw `text/plain` body (iOS Shortcut); server runs `classifyInput` (§2.2) | `201 {id, status:"submitted", source:{kind,...}}`; rejected input → `400 {error}` |
-| `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,createdAt}]` newest first |
+| `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,listenedAt,createdAt}]` newest first; `listenedAt` is null until listened |
 | `GET /api/episodes/:id` | — | full episode incl. `source`, `dossier.sources`, `factcheck.claims`, `script.segments[].startMs`, `error`. **`dossier.markdown` is NEVER returned by any route** — it is server-side grounding material only; clients get `dossier.sources` |
+| `PUT /api/episodes/:id/listened` | JSON `{listened: boolean}` | `200 {id, listenedAt}` (`listenedAt` null when unmarked); non-boolean → `400 {error}`; unknown id → `404 {error}` |
 | `GET /api/episodes/:id/audio` | supports `Range` | `200`/`206 audio/mpeg`, `Accept-Ranges: bytes` |
 | `GET /api/episodes/:id/chats` | — | `[{role,text,positionMs,createdAt}]` |
 | `POST .../ask`, `POST .../ask-text` | see M3 | see M3 |
@@ -610,6 +616,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   factcheck_json  TEXT,                          -- {claims:[...]} audit trail
   audio_path      TEXT,
   duration_ms     INTEGER,
+  listened_at     INTEGER,                      -- epoch ms; NULL = not listened yet
   attempts        INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER NOT NULL DEFAULT 0,   -- epoch ms
   created_at      INTEGER NOT NULL,             -- epoch ms

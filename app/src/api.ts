@@ -16,6 +16,8 @@ export interface EpisodeListItem {
   status: Status;
   sourceKind: "article" | "tweet" | "topic";
   durationMs: number | null;
+  /** epoch ms when marked listened; null = not listened yet. Server-side, so it follows you across devices. */
+  listenedAt: number | null;
   createdAt: number;
 }
 
@@ -44,6 +46,7 @@ export interface EpisodeDetail {
   script: { segments: Segment[] } | null;
   factcheck: { claims: Claim[] } | null;
   durationMs: number | null;
+  listenedAt: number | null;
   error: { stage: string; message: string } | null;
   createdAt: number;
 }
@@ -70,6 +73,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input }),
     }).then(json<{ id: string; status: Status; source: { kind: string } }>),
+  setListened: (id: string, listened: boolean) =>
+    fetch(`/api/episodes/${id}/listened`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ listened }),
+    }).then(json<{ id: string; listenedAt: number | null }>),
   askText: (id: string, question: string, positionMs: number) =>
     fetch(`/api/episodes/${id}/ask-text`, {
       method: "POST",

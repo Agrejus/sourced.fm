@@ -6,6 +6,8 @@ import type { SourceInput } from "./fetchers/types";
 
 // Frozen DDL (Appendix A). Migrations are CREATE TABLE IF NOT EXISTS — on boot
 // we open the file and ensure the schema; there is no separate migration step.
+// Columns added after a database already exists need ADD_COLUMNS below, since
+// CREATE TABLE IF NOT EXISTS is a no-op on an existing table.
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS episodes (
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   factcheck_json  TEXT,
   audio_path      TEXT,
   duration_ms     INTEGER,
+  listened_at     INTEGER,
   attempts        INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL,
@@ -36,6 +39,22 @@ CREATE TABLE IF NOT EXISTS chats (
 );
 CREATE INDEX IF NOT EXISTS idx_chats_episode ON chats(episode_id, created_at);
 `;
+
+// Additive column migrations for databases created before the column existed.
+// Each entry is applied only when the column is missing, so boot is idempotent.
+const ADD_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  { table: "episodes", column: "listened_at", ddl: "ALTER TABLE episodes ADD COLUMN listened_at INTEGER" },
+];
+
+function applyAddColumns(database: Database): void {
+  for (const { table, column, ddl } of ADD_COLUMNS) {
+    const existing = database
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name);
+    if (!existing.includes(column)) database.run(ddl);
+  }
+}
 
 export type Status =
   | "submitted"
@@ -61,6 +80,7 @@ export interface EpisodeRow {
   factcheck_json: string | null;
   audio_path: string | null;
   duration_ms: number | null;
+  listened_at: number | null;
   attempts: number;
   next_attempt_at: number;
   created_at: number;
@@ -91,6 +111,7 @@ export type StagePatch = Partial<Record<(typeof PATCH_COLUMNS)[number], string |
 export function createDb(path: string): Database {
   const database = new Database(path, { create: true });
   database.run(SCHEMA_SQL);
+  applyAddColumns(database);
   return database;
 }
 
@@ -189,6 +210,17 @@ export function createAccessors(database: Database) {
       .run(now).changes as number;
   }
 
+  // Listened state is user bookkeeping, deliberately outside the stage-transition
+  // path (PATCH_COLUMNS): it can be set at any status and never moves the pipeline.
+  // listenedAt of null clears the mark. Returns false when the episode is missing.
+  function setEpisodeListened(id: string, listenedAt: number | null, now: number): boolean {
+    return (
+      database
+        .query("UPDATE episodes SET listened_at = ?, updated_at = ? WHERE id = ?")
+        .run(listenedAt, now, id).changes > 0
+    );
+  }
+
   function insertChat(
     episodeId: string,
     role: "user" | "assistant",
@@ -223,6 +255,7 @@ export function createAccessors(database: Database) {
     failEpisode,
     scheduleRetry,
     resetStuckSynthesizing,
+    setEpisodeListened,
     insertChat,
     listChats,
   };

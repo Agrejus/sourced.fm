@@ -106,3 +106,26 @@ test("insertChat / listChats round-trip in order", () => {
   expect(chats.map((c) => c.role)).toEqual(["user", "assistant"]);
   expect(chats[0]!.position_ms).toBe(1234);
 });
+
+test("setEpisodeListened marks, clears, and reports a missing episode", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  expect(a.getEpisode(ep.id)!.listened_at).toBeNull();
+
+  expect(a.setEpisodeListened(ep.id, 5000, 5000)).toBe(true);
+  expect(a.getEpisode(ep.id)!.listened_at).toBe(5000);
+
+  // Clearing the mark puts it back in the "to listen" pile.
+  expect(a.setEpisodeListened(ep.id, null, 6000)).toBe(true);
+  expect(a.getEpisode(ep.id)!.listened_at).toBeNull();
+
+  expect(a.setEpisodeListened("no-such-id", 5000, 5000)).toBe(false);
+});
+
+test("listened state survives the pipeline advancing the episode", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  a.setEpisodeListened(ep.id, 5000, 5000);
+  a.updateEpisodeStage(ep.id, "submitted", "sourced", { title: "T" }, 6000);
+  expect(a.getEpisode(ep.id)!.listened_at).toBe(5000);
+});

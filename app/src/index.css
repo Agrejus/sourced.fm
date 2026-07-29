@@ -336,10 +336,78 @@ input {
   background: rgba(255, 107, 107, 0.16);
   color: var(--red);
 }
+.chip.listened {
+  background: rgba(61, 220, 151, 0.14);
+  color: var(--green);
+}
 .kind-tag {
   font-size: 11.5px;
   color: var(--muted);
   text-transform: capitalize;
+}
+
+/* ---- listened / unlistened ---- */
+.card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.card-row .card {
+  flex: 1;
+  min-width: 0;
+}
+/* Listened episodes recede so the unlistened ones read as the queue. */
+.card-row.is-listened .card-art,
+.card-row.is-listened .card-title {
+  opacity: 0.55;
+}
+.listen-toggle {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.listen-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.listen-toggle.on {
+  background: rgba(61, 220, 151, 0.16);
+  border-color: rgba(61, 220, 151, 0.35);
+  color: var(--green);
+}
+.filters {
+  display: flex;
+  gap: 8px;
+  margin: 0 2px 14px;
+}
+.filter {
+  font-size: 12.5px;
+  font-weight: 650;
+  padding: 6px 13px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.filter:hover {
+  color: var(--text);
+}
+.filter.on {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+.page-head .count.unlistened {
+  background: rgba(124, 108, 255, 0.18);
+  color: var(--accent);
 }
 
 .spinner {
@@ -548,6 +616,29 @@ input {
 }
 .tp-play:hover {
   transform: scale(1.05);
+}
+
+/* Manual override for the auto-mark that fires when an episode plays out. */
+.mark-listened {
+  display: block;
+  margin: 18px auto 0;
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--line);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mark-listened:hover {
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.42);
+}
+.mark-listened.on {
+  color: var(--green);
+  border-color: rgba(61, 220, 151, 0.35);
+  background: rgba(61, 220, 151, 0.14);
 }
 
 /* ---- voice ---- */
@@ -968,6 +1059,16 @@ input {
 }
 .pl-remove {
   color: var(--muted) !important;
+}
+.pl-listen {
+  color: var(--muted) !important;
+}
+.pl-listen.on {
+  background: rgba(61, 220, 151, 0.16);
+  color: var(--green) !important;
+}
+.pl-item.is-listened .pl-title {
+  opacity: 0.6;
 }
 .pl-hint {
   margin: 4px 2px 0;

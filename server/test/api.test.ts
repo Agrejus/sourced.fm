@@ -12,6 +12,7 @@ function appWith(a: Accessors) {
   app.post("/api/episodes", (c) => api.create(c));
   app.get("/api/episodes", (c) => api.list(c));
   app.get("/api/episodes/:id", (c) => api.get(c));
+  app.put("/api/episodes/:id/listened", (c) => api.setListened(c));
   app.get("/api/episodes/:id/audio", (c) => api.audio(c));
   app.get("/api/episodes/:id/chats", (c) => api.chats(c));
   return app;
@@ -124,4 +125,51 @@ test("audio route: 404 when no audio yet", async () => {
   const ep = a.insertEpisode({ kind: "article", url: "https://a.com/1" }, 1000);
   const res = await appWith(a).request(`/api/episodes/${ep.id}/audio`);
   expect(res.status).toBe(404);
+});
+
+test("PUT /api/episodes/:id/listened marks, unmarks, and surfaces in the projections", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const ep = a.insertEpisode({ kind: "topic", topic: "kubernetes" }, 1000);
+  const app = appWith(a);
+
+  const listBefore = (await (await app.request("/api/episodes")).json()) as { listenedAt: number | null }[];
+  expect(listBefore[0]!.listenedAt).toBeNull();
+
+  const marked = await app.request(`/api/episodes/${ep.id}/listened`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listened: true }),
+  });
+  expect(marked.status).toBe(200);
+  expect(((await marked.json()) as { listenedAt: number | null }).listenedAt).toBe(1);
+
+  const detail = (await (await app.request(`/api/episodes/${ep.id}`)).json()) as { listenedAt: number | null };
+  expect(detail.listenedAt).toBe(1);
+
+  const cleared = await app.request(`/api/episodes/${ep.id}/listened`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listened: false }),
+  });
+  expect(((await cleared.json()) as { listenedAt: number | null }).listenedAt).toBeNull();
+});
+
+test("PUT /api/episodes/:id/listened rejects a non-boolean body and unknown ids", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const ep = a.insertEpisode({ kind: "topic", topic: "kubernetes" }, 1000);
+  const app = appWith(a);
+
+  const bad = await app.request(`/api/episodes/${ep.id}/listened`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listened: "yes" }),
+  });
+  expect(bad.status).toBe(400);
+
+  const missing = await app.request("/api/episodes/nope/listened", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listened: true }),
+  });
+  expect(missing.status).toBe(404);
 });

@@ -21,6 +21,7 @@ function toDetail(ep: EpisodeRow) {
     script: script ? { segments: script.segments } : null,
     factcheck: factcheck ? { claims: factcheck.claims } : null,
     durationMs: ep.duration_ms,
+    listenedAt: ep.listened_at,
     error: ep.error_json ? JSON.parse(ep.error_json) : null,
     createdAt: ep.created_at,
   };
@@ -33,6 +34,7 @@ function toListItem(ep: EpisodeRow) {
     status: ep.status,
     sourceKind: (JSON.parse(ep.source_json) as SourceInput).kind,
     durationMs: ep.duration_ms,
+    listenedAt: ep.listened_at,
     createdAt: ep.created_at,
   };
 }
@@ -74,6 +76,21 @@ export function createEpisodesApi(deps: EpisodesDeps) {
     const ep = deps.accessors.getEpisode(c.req.param("id")!);
     if (!ep) return c.json({ error: "not found" }, 404);
     return c.json(toDetail(ep));
+  }
+
+  // Mark/unmark an episode as listened. Idempotent: re-marking an already
+  // listened episode refreshes the timestamp rather than erroring.
+  async function setListened(c: Context): Promise<Response> {
+    const id = c.req.param("id")!;
+    const body = (await c.req.json().catch(() => ({}))) as { listened?: unknown };
+    if (typeof body.listened !== "boolean") {
+      return c.json({ error: "listened must be a boolean" }, 400);
+    }
+    const listenedAt = body.listened ? deps.now() : null;
+    if (!deps.accessors.setEpisodeListened(id, listenedAt, deps.now())) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return c.json({ id, listenedAt });
   }
 
   function chats(c: Context): Response {
@@ -138,5 +155,5 @@ export function createEpisodesApi(deps: EpisodesDeps) {
     });
   }
 
-  return { create, list, get, chats, audio };
+  return { create, list, get, setListened, chats, audio };
 }

@@ -49,6 +49,7 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
   const [view, setView] = useState<"home" | "episodes" | "playlists">("home");
+  const [filter, setFilter] = useState<"all" | "unlistened" | "listened">("all");
 
   // Playlists (on-device). openPlaylistId drives the playlist-detail screen;
   // queue is the running listen order that auto-advances when an episode ends.
@@ -78,6 +79,23 @@ export default function App() {
     setDetail(d);
     setChats(c);
   }, []);
+
+  // Listened state lives on the server (unlike playlists), so the same episode
+  // reads as listened on every device. Flip locally first, then reconcile.
+  const markListened = useCallback(
+    async (id: string, listened: boolean) => {
+      const at = listened ? Date.now() : null;
+      setEpisodes((es) => es.map((e) => (e.id === id ? { ...e, listenedAt: at } : e)));
+      setDetail((d) => (d && d.id === id ? { ...d, listenedAt: at } : d));
+      try {
+        await api.setListened(id, listened);
+      } catch {
+        /* the refresh below restores whatever the server actually has */
+      }
+      void loadEpisodes();
+    },
+    [loadEpisodes],
+  );
 
   // Episode list + 5s poll (drives optimistic entries to ready/failed).
   useEffect(() => {
@@ -343,9 +361,11 @@ export default function App() {
     autoplayRef.current = true;
     setSelectedId(first);
   }
-  // Called when the current episode finishes — advance to the next queued item.
+  // Called when the current episode finishes — mark it listened, then advance
+  // to the next queued item.
   function handleEnded() {
     setPlaying(false);
+    if (selectedId) void markListened(selectedId, true);
     if (!queue || !selectedId) return;
     const i = queue.indexOf(selectedId);
     const next = i >= 0 ? queue[i + 1] : undefined;
@@ -370,11 +390,22 @@ export default function App() {
   if (selectedId === null) {
     const sorted = [...episodes].sort((a, b) => b.createdAt - a.createdAt);
     const generating = episodes.filter((e) => e.status !== "ready" && e.status !== "failed").length;
+    const unlistened = sorted.filter((e) => e.listenedAt === null);
+    const filtered =
+      filter === "unlistened"
+        ? unlistened
+        : filter === "listened"
+          ? sorted.filter((e) => e.listenedAt !== null)
+          : sorted;
+    // "Jump back in" surfaces what you still have to listen to; once everything
+    // is listened it falls back to the most recent episodes.
+    const jumpBackIn = (unlistened.length > 0 ? unlistened : sorted).slice(0, 3);
 
     const card = (e: EpisodeListItem) => {
       const busyState = e.status !== "ready" && e.status !== "failed";
+      const listened = e.listenedAt !== null;
       return (
-        <li key={e.id}>
+        <li key={e.id} className={`card-row${listened ? " is-listened" : ""}`}>
           <button className="card" onClick={() => setSelectedId(e.id)}>
             <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
               <span className="card-glyph">{KIND_GLYPH[e.sourceKind] ?? "♫"}</span>
@@ -394,8 +425,18 @@ export default function App() {
                       : e.status}
                 </span>
                 <span className="kind-tag">{e.sourceKind}</span>
+                {listened && <span className="chip listened">✓ Listened</span>}
               </span>
             </span>
+          </button>
+          <button
+            className={`listen-toggle${listened ? " on" : ""}`}
+            onClick={() => void markListened(e.id, !listened)}
+            aria-pressed={listened}
+            title={listened ? "Mark as unlistened" : "Mark as listened"}
+            aria-label={listened ? "Mark as unlistened" : "Mark as listened"}
+          >
+            ✓
           </button>
         </li>
       );
@@ -436,12 +477,12 @@ export default function App() {
             {sorted.length > 0 && (
               <section className="home-section">
                 <div className="section-head">
-                  <h2>Jump back in</h2>
+                  <h2>{unlistened.length > 0 ? "Up next" : "Jump back in"}</h2>
                   <button className="see-all" onClick={() => setView("episodes")}>
                     All episodes →
                   </button>
                 </div>
-                <ul className="cards">{sorted.slice(0, 3).map(card)}</ul>
+                <ul className="cards">{jumpBackIn.map(card)}</ul>
               </section>
             )}
           </div>
@@ -451,7 +492,25 @@ export default function App() {
             <div className="page-head">
               <h1>Episodes</h1>
               <span className="count">{episodes.length}</span>
+              {unlistened.length > 0 && (
+                <span className="count unlistened">{unlistened.length} to listen</span>
+              )}
             </div>
+            {episodes.length > 0 && (
+              <div className="filters" role="tablist">
+                {(["all", "unlistened", "listened"] as const).map((f) => (
+                  <button
+                    key={f}
+                    role="tab"
+                    aria-selected={filter === f}
+                    className={`filter ${filter === f ? "on" : ""}`}
+                    onClick={() => setFilter(f)}
+                  >
+                    {f === "all" ? "All" : f === "unlistened" ? "Unlistened" : "Listened"}
+                  </button>
+                ))}
+              </div>
+            )}
             {episodes.length === 0 ? (
               <div className="empty">
                 <div className="empty-glyph" aria-hidden="true">
@@ -460,8 +519,20 @@ export default function App() {
                 <p>No episodes yet.</p>
                 <p className="muted">Head to Home and paste a link or topic to make your first one.</p>
               </div>
+            ) : filtered.length === 0 ? (
+              <div className="empty">
+                <div className="empty-glyph" aria-hidden="true">
+                  ✓
+                </div>
+                <p>{filter === "unlistened" ? "All caught up." : "Nothing listened to yet."}</p>
+                <p className="muted">
+                  {filter === "unlistened"
+                    ? "Every episode is marked listened."
+                    : "Episodes you finish — or mark with ✓ — show up here."}
+                </p>
+              </div>
             ) : (
-              <ul className="cards">{sorted.map(card)}</ul>
+              <ul className="cards">{filtered.map(card)}</ul>
             )}
           </div>
         )}
@@ -500,9 +571,11 @@ export default function App() {
                     ) : (
                       <ul className="cards">
                         {playlists.map((p) => {
-                          const ready = p.episodeIds.filter(
-                            (id) => episodes.find((e) => e.id === id)?.status === "ready",
-                          ).length;
+                          const items = p.episodeIds
+                            .map((id) => episodes.find((e) => e.id === id))
+                            .filter((e): e is EpisodeListItem => !!e);
+                          const ready = items.filter((e) => e.status === "ready").length;
+                          const left = items.filter((e) => e.listenedAt === null).length;
                           return (
                             <li key={p.id}>
                               <button className="card" onClick={() => setOpenPlaylistId(p.id)}>
@@ -515,6 +588,11 @@ export default function App() {
                                     <span className="kind-tag">
                                       {p.episodeIds.length} episode{p.episodeIds.length === 1 ? "" : "s"}
                                       {ready < p.episodeIds.length ? ` · ${ready} ready` : ""}
+                                      {items.length > 0
+                                        ? left === 0
+                                          ? " · ✓ all listened"
+                                          : ` · ${left} to listen`
+                                        : ""}
                                     </span>
                                   </span>
                                 </span>
@@ -565,7 +643,7 @@ export default function App() {
                   ) : (
                     <ol className="pl-items">
                       {inList.map((e, i) => (
-                        <li key={e.id} className="pl-item">
+                        <li key={e.id} className={`pl-item${e.listenedAt !== null ? " is-listened" : ""}`}>
                           <span className="pl-index">{i + 1}</span>
                           <button
                             className="pl-main"
@@ -580,9 +658,20 @@ export default function App() {
                                   : "ready"
                                 : e.status}{" "}
                               · {e.sourceKind}
+                              {e.listenedAt !== null ? " · ✓ listened" : ""}
                             </span>
                           </button>
                           <span className="pl-ctrls">
+                            <button
+                              aria-label={
+                                e.listenedAt !== null ? "Mark as unlistened" : "Mark as listened"
+                              }
+                              aria-pressed={e.listenedAt !== null}
+                              className={`pl-listen${e.listenedAt !== null ? " on" : ""}`}
+                              onClick={() => void markListened(e.id, e.listenedAt === null)}
+                            >
+                              ✓
+                            </button>
                             <button
                               aria-label="Move up"
                               onClick={() => moveInPlaylist(open.id, i, -1)}
@@ -769,6 +858,14 @@ export default function App() {
                     <span className="tp-num">30</span>↻
                   </button>
                 </div>
+
+                <button
+                  className={`mark-listened${detail.listenedAt !== null ? " on" : ""}`}
+                  onClick={() => void markListened(detail.id, detail.listenedAt === null)}
+                  aria-pressed={detail.listenedAt !== null}
+                >
+                  {detail.listenedAt !== null ? "✓ Listened — undo" : "Mark as listened"}
+                </button>
 
                 {micSupported ? (
                   <div className="voice">
