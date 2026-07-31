@@ -799,6 +799,66 @@ input {
     opacity: 0.72;
   }
 }
+/* ---- interrupt status: listening, thinking, answering ---- */
+.voice-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.82);
+}
+.voice-state.thinking {
+  color: var(--accent);
+}
+.rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% { opacity: 0.25; }
+}
+/* three bars bouncing while the answer speaks */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+.eq i {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--green);
+  animation: eq 0.7s ease-in-out infinite;
+}
+.eq i:nth-child(1) { height: 6px; animation-delay: 0s; }
+.eq i:nth-child(2) { height: 12px; animation-delay: 0.15s; }
+.eq i:nth-child(3) { height: 8px; animation-delay: 0.3s; }
+@keyframes eq {
+  50% { transform: scaleY(0.4); }
+}
+.tap-answer {
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+  background: rgba(124, 108, 255, 0.22);
+  border: 1px solid rgba(124, 108, 255, 0.5);
+}
+.voice-error {
+  margin: 0;
+  max-width: 320px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--red);
+}
+
 .voice-note {
   text-align: center;
   margin-top: 18px;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatTurn, type EpisodeDetail, type EpisodeListItem } from "./api";
-import { beep } from "./audio";
+import { beep, primeAudio } from "./audio";
 import { loadPlaylists, newId, savePlaylists, type Playlist } from "./playlists";
 
 function mmss(ms: number): string {
@@ -66,6 +66,12 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
+  // What the interrupt is doing right now, so the screen can say so. Also the
+  // single guard against overlapping interrupts: only "idle" may start one.
+  const [voiceState, setVoiceState] = useState<"idle" | "listening" | "thinking" | "answering">("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Set when the browser refuses to autoplay the answer; the user taps to hear it.
+  const [answerToTap, setAnswerToTap] = useState(false);
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
@@ -93,6 +99,19 @@ export default function App() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recognitionRef = useRef<{ start: () => void; stop: () => void } | null>(null);
   const interruptingRef = useRef(false);
+  // One long-lived element for spoken answers, unlocked inside the press gesture.
+  // A fresh `new Audio()` per answer is refused by iOS, because by the time the
+  // answer arrives (mic, recording, round trip) the gesture is long gone: the
+  // answer text appeared in the chat and nothing was ever spoken.
+  const answerAudioRef = useRef<HTMLAudioElement>(null);
+  const answerUnlockedRef = useRef(false);
+  // Release can beat getUserMedia. Without this the press is ignored and the
+  // recorder runs to its 15s cap with the interrupt latched the whole time.
+  const pendingStopRef = useRef(false);
+  const resumeAfterAnswerRef = useRef(false);
+  // rearmWake is defined below because it calls startRecording; a ref keeps the
+  // reference current without an ordering cycle.
+  const rearmWakeRef = useRef<(() => void) | null>(null);
   const autoplayRef = useRef(false); // request autoplay after the next detail loads
   const lastSavedMsRef = useRef(-1); // last position written, to skip no-op writes
   const resumeForRef = useRef<string | null>(null); // episode still waiting for its resume seek
@@ -324,72 +343,191 @@ export default function App() {
     const q = question.trim();
     setQuestion("");
     setBusy(true);
+    setVoiceError(null);
+    setVoiceState("thinking");
     try {
       await api.askText(detail.id, q, currentMs);
       setChats(await api.getChats(detail.id));
+    } catch (e) {
+      setVoiceError(`Could not answer: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      setVoiceState("idle");
       setBusy(false);
     }
   }
 
-  // Hold-to-talk / wake-word interrupt (§4.2 frozen flow).
-  const startRecording = useCallback(async () => {
-    if (!detail || busy || interruptingRef.current) return;
-    interruptingRef.current = true;
-    const audio = audioRef.current!;
-    const positionMs = audio.currentTime * 1000;
-    audio.pause();
-    disarmWake();
-    beep();
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
-    } catch {
-      interruptingRef.current = false;
-      return;
-    }
-    const rec = new MediaRecorder(stream);
-    const chunks: Blob[] = [];
-    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    rec.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
-      setRecording(false);
-      setBusy(true);
-      try {
-        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-        const { audio: answerBlob } = await api.askAudio(detail.id, blob, positionMs);
-        setChats(await api.getChats(detail.id));
-        const answer = new Audio(URL.createObjectURL(answerBlob));
-        answer.onended = () => {
-          audio.currentTime = positionMs / 1000;
-          void audio.play();
-          rearmWake();
-        };
-        await answer.play();
-      } finally {
-        setBusy(false);
-        interruptingRef.current = false;
-      }
-    };
-    recorderRef.current = rec;
-    setRecording(true);
-    rec.start();
-    setTimeout(() => rec.state !== "inactive" && rec.stop(), 15000); // hard cap
-  }, [detail, busy]);
-
-  function stopRecording() {
-    const rec = recorderRef.current;
-    if (rec && rec.state !== "inactive") rec.stop();
-  }
-
-  // Wake word: while playing + visible + toggle on, listen for the standalone
-  // word "question". Restart on iOS's ~60s auto-stop. Disarm during interrupts.
+  // Stop listening for the wake word. Defined here so the interrupt below can
+  // depend on it.
   const disarmWake = useCallback(() => {
     recognitionRef.current?.stop();
     recognitionRef.current = null;
     setListening(false);
   }, []);
 
+  // Hold-to-talk / wake-word interrupt (§4.2 frozen flow).
+  //
+  // Everything that can fail is contained: a failure returns to "idle" and says
+  // why, so the button always works on the next press.
+
+  // Give the answer element a user-activated history while we still hold the
+  // gesture. Playing a zero-length silent wav is enough to mark it playable.
+  const SILENT_WAV =
+    "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+  function unlockAnswerAudio() {
+    const el = answerAudioRef.current;
+    if (!el || answerUnlockedRef.current) return;
+    try {
+      el.src = SILENT_WAV;
+      void el
+        .play()
+        .then(() => {
+          el.pause();
+          answerUnlockedRef.current = true;
+        })
+        .catch(() => {
+          /* fall back to the tap-to-play path below */
+        });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Speak the answer through the unlocked element, then resume the episode.
+  const playAnswer = useCallback(
+    async (answerBlob: Blob, positionMs: number) => {
+      const el = answerAudioRef.current;
+      const episode = audioRef.current;
+      const url = URL.createObjectURL(answerBlob);
+      const finish = () => {
+        URL.revokeObjectURL(url);
+        setVoiceState("idle");
+        setAnswerToTap(false);
+        if (episode && resumeAfterAnswerRef.current) {
+          episode.currentTime = positionMs / 1000;
+          void episode.play().catch(() => {});
+        }
+        rearmWakeRef.current?.();
+      };
+      if (!el) {
+        finish();
+        return;
+      }
+      el.src = url;
+      el.onended = finish;
+      el.onerror = finish;
+      setVoiceState("answering");
+      try {
+        await el.play();
+      } catch {
+        // Autoplay refused. Keep the answer loaded and let a tap start it.
+        setVoiceState("idle");
+        setAnswerToTap(true);
+      }
+    },
+    [],
+  );
+
+  const startRecording = useCallback(async () => {
+    // A follow-up may interrupt an answer that is still speaking; only an open
+    // recording or an in-flight request blocks a new one.
+    if (!detail || busy || voiceState === "listening" || voiceState === "thinking") return;
+    const speaking = answerAudioRef.current;
+    if (speaking && !speaking.paused) speaking.pause();
+
+    // Inside the gesture: unlock playback and the beep context.
+    primeAudio();
+    unlockAnswerAudio();
+
+    setVoiceError(null);
+    setAnswerToTap(false);
+    pendingStopRef.current = false;
+    interruptingRef.current = true;
+    setVoiceState("listening");
+
+    const audio = audioRef.current;
+    const positionMs = audio ? audio.currentTime * 1000 : 0;
+    resumeAfterAnswerRef.current = !!audio && !audio.paused;
+    audio?.pause();
+    disarmWake();
+    beep();
+
+    const bail = (message?: string) => {
+      interruptingRef.current = false;
+      pendingStopRef.current = false;
+      setRecording(false);
+      setVoiceState("idle");
+      if (message) setVoiceError(message);
+      if (audio && resumeAfterAnswerRef.current) void audio.play().catch(() => {});
+      rearmWakeRef.current?.();
+    };
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+    } catch {
+      bail("Microphone was refused. Check the site's mic permission.");
+      return;
+    }
+
+    // Released before the mic opened: treat it as a cancelled press.
+    if (pendingStopRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      bail();
+      return;
+    }
+
+    let rec: MediaRecorder;
+    try {
+      rec = new MediaRecorder(stream);
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      bail("This browser cannot record audio.");
+      return;
+    }
+
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      setRecording(false);
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      // A tap rather than a hold records almost nothing; do not bother the LLM.
+      if (blob.size < 1200) {
+        bail();
+        return;
+      }
+      setVoiceState("thinking");
+      try {
+        const { audio: answerBlob } = await api.askAudio(detail.id, blob, positionMs);
+        setChats(await api.getChats(detail.id));
+        await playAnswer(answerBlob, positionMs);
+      } catch (e) {
+        bail(`Could not answer: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      interruptingRef.current = false;
+      pendingStopRef.current = false;
+    };
+
+    recorderRef.current = rec;
+    setRecording(true);
+    try {
+      rec.start();
+    } catch {
+      bail("Recording would not start.");
+      return;
+    }
+    setTimeout(() => rec.state !== "inactive" && rec.stop(), 15000); // hard cap
+  }, [detail, busy, voiceState, disarmWake, playAnswer]);
+
+  function stopRecording() {
+    pendingStopRef.current = true; // honoured if the mic is still opening
+    const rec = recorderRef.current;
+    if (rec && rec.state !== "inactive") rec.stop();
+  }
+
+  // Wake word: while playing + visible + toggle on, listen for the standalone
+  // word "question". Restart on iOS's ~60s auto-stop. Disarm during interrupts.
   const rearmWake = useCallback(() => {
     if (!wakeSupported || !wakeOn) return;
     const audio = audioRef.current;
@@ -424,6 +562,28 @@ export default function App() {
       recognitionRef.current = null;
     }
   }, [wakeOn, startRecording]);
+
+  useEffect(() => {
+    rearmWakeRef.current = rearmWake;
+  }, [rearmWake]);
+
+  // While a hold is open, a release anywhere on the page ends it. Relying on the
+  // button's own mouseup/touchend loses the release if the finger drifts off it,
+  // or if the button re-renders between press and release.
+  useEffect(() => {
+    if (voiceState !== "listening") return;
+    const end = () => stopRecording();
+    window.addEventListener("mouseup", end);
+    window.addEventListener("touchend", end);
+    window.addEventListener("touchcancel", end);
+    window.addEventListener("blur", end);
+    return () => {
+      window.removeEventListener("mouseup", end);
+      window.removeEventListener("touchend", end);
+      window.removeEventListener("touchcancel", end);
+      window.removeEventListener("blur", end);
+    };
+  }, [voiceState]);
 
   // Arm/disarm as playback + visibility + toggle change.
   useEffect(() => {
@@ -1376,6 +1536,8 @@ export default function App() {
 
                 {micSupported ? (
                   <div className="voice">
+                    {/* One element for every spoken answer, unlocked on press. */}
+                    <audio ref={answerAudioRef} preload="auto" />
                     <button
                       className={`talk ${recording ? "rec" : ""}`}
                       onMouseDown={startRecording}
@@ -1385,10 +1547,51 @@ export default function App() {
                         void startRecording();
                       }}
                       onTouchEnd={stopRecording}
-                      disabled={busy}
+                      disabled={busy || voiceState === "thinking"}
                     >
                       {recording ? "● Recording — release to ask" : "🎙 Hold to ask"}
                     </button>
+
+                    {/* What the interrupt is doing, so a pause is never a mystery. */}
+                    {voiceState !== "idle" && (
+                      <p className={`voice-state ${voiceState}`}>
+                        {voiceState === "listening" ? (
+                          <>
+                            <span className="rec-dot" aria-hidden="true" /> Listening
+                          </>
+                        ) : voiceState === "thinking" ? (
+                          <>
+                            <span className="spinner light" aria-hidden="true" /> Thinking about your
+                            question…
+                          </>
+                        ) : (
+                          <>
+                            <span className="eq" aria-hidden="true">
+                              <i /><i /><i />
+                            </span>
+                            Answering…
+                          </>
+                        )}
+                      </p>
+                    )}
+
+                    {answerToTap && (
+                      <button
+                        className="tap-answer"
+                        onClick={() => {
+                          const el = answerAudioRef.current;
+                          if (!el) return;
+                          setAnswerToTap(false);
+                          setVoiceState("answering");
+                          answerUnlockedRef.current = true;
+                          void el.play().catch(() => setVoiceState("idle"));
+                        }}
+                      >
+                        ▶ Tap to hear the answer
+                      </button>
+                    )}
+
+                    {voiceError && <p className="voice-error">{voiceError}</p>}
                     {wakeSupported && (
                       <label className="wake">
                         <input
