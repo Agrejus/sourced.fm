@@ -599,8 +599,11 @@ input {
   flex: none;
   display: grid;
   place-items: center;
-  padding: 9px 0 5px;
+  padding: 12px 0 8px; /* the only drag affordance, so give it a real target */
   cursor: grab;
+}
+.sheet.up .sheet-head:hover .grab {
+  background: rgba(255, 255, 255, 0.45);
 }
 .sheet-head:active { cursor: grabbing; }
 .grab {
@@ -754,7 +757,8 @@ body.sheet-open {
 .now-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end; /* only the kind label lives here now */
+  min-height: 20px;
   margin-bottom: 8px;
 }
 .pill-btn {
