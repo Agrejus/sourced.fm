@@ -552,6 +552,152 @@ input {
 }
 
 /* ============================================================
+   THE PLAYER SHEET
+   Slides up over the library, collapses to a mini bar above the
+   tab bar, and is dragged by its handle or the mini row.
+   ============================================================ */
+/* The wrapper clips at the tab bar, so a sheet slid down cannot paint over it,
+   and passes clicks through to the library wherever the sheet is not. */
+.sheet-wrap {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: calc(66px + env(safe-area-inset-bottom));
+  z-index: 30;
+  max-width: 640px;
+  margin: 0 auto;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sheet {
+  --mini-h: 92px;
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-soft);
+  border-radius: 22px 22px 0 0;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.6);
+  transition: transform 0.34s var(--ease);
+  will-change: transform;
+  touch-action: none; /* the sheet owns vertical gestures on its handle */
+}
+.sheet.up { transform: translateY(0); }
+.sheet.down { transform: translateY(calc(100% - var(--mini-h))); }
+.sheet.dragging { transition: none; }
+
+/* grab handle */
+.sheet-head {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 9px 0 5px;
+  cursor: grab;
+}
+.sheet-head:active { cursor: grabbing; }
+.grab {
+  width: 42px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* ---- mini player, visible only when the sheet is down ---- */
+.mini {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px 14px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sheet.up .mini { display: none; }
+.mini-bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.mini-bar span {
+  display: block;
+  height: 100%;
+  background: hsl(var(--h) 90% 62%);
+}
+.mini-art {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+}
+.mini-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mini-title {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.mini-btn {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+.mini-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.mini-btn:disabled { opacity: 0.35; }
+.mini-btn.close { font-size: 12px; color: var(--muted); background: none; }
+.mini-btn .tp-num { font-size: 8px; }
+
+/* the full player scrolls inside the sheet */
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  position: relative;
+}
+.sheet.down .sheet-body { overflow: hidden; }
+
+/* room so the mini bar never covers the last card */
+.shell.with-mini .page {
+  padding-bottom: calc(180px + env(safe-area-inset-bottom));
+}
+
+/* ============================================================
    NOW PLAYING
    ============================================================ */
 .now {

@@ -72,6 +72,9 @@ export default function App() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   // Set when the browser refuses to autoplay the answer; the user taps to hear it.
   const [answerToTap, setAnswerToTap] = useState(false);
+  // The player is a sheet over the library: expanded, or collapsed to a mini bar.
+  const [expanded, setExpanded] = useState(true);
+  const [dragPx, setDragPx] = useState(0);
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
@@ -116,6 +119,9 @@ export default function App() {
   const lastSavedMsRef = useRef(-1); // last position written, to skip no-op writes
   const resumeForRef = useRef<string | null>(null); // episode still waiting for its resume seek
   const loadedIdRef = useRef<string | null>(null); // episode whose audio is in the element
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const dragFromRef = useRef<{ y: number; at: number } | null>(null);
+  const draggedRef = useRef(false); // a drag must not also fire the tap-to-expand
 
   useEffect(() => savePlaylists(playlists), [playlists]);
 
@@ -626,19 +632,6 @@ export default function App() {
     a.currentTime = ms / 1000;
     setCurrentMs(ms);
   }
-  function goBack() {
-    loadedIdRef.current = null;
-    const audio = audioRef.current;
-    if (audio && selectedId && !audio.ended) savePosition(selectedId, audio.currentTime * 1000, true);
-    audio?.pause();
-    setPlaying(false);
-    setCurrentMs(0);
-    setDetail(null);
-    setChats([]);
-    setSelectedId(null);
-    setTab("transcript");
-  }
-
   // ---- multi-select -> new playlist ----
   function toggleSelected(id: string) {
     setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
@@ -709,6 +702,7 @@ export default function App() {
     if (playable.length === 0) return;
     const first = startId && playable.includes(startId) ? startId : playable[0]!;
     setQueue(playable);
+    setExpanded(true);
     // A tap started this, so the element is user-activated: load and play now.
     playNow(first);
   }
@@ -739,6 +733,65 @@ export default function App() {
     setSelectedId(id);
   }
 
+  // ---- the sheet: drag it up and down, or tap the mini bar ----
+  const SNAP_PX = 64; // past this, the gesture decides; below it, it springs back
+
+  function onDragStart(e: React.PointerEvent) {
+    // Buttons in the mini bar handle their own taps.
+    if ((e.target as HTMLElement).closest("button")) return;
+    dragFromRef.current = { y: e.clientY, at: Date.now() };
+    draggedRef.current = false;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+
+  function onDragMove(e: React.PointerEvent) {
+    const from = dragFromRef.current;
+    if (!from) return;
+    // Expanded only travels down; collapsed only travels up.
+    const dy = expanded ? Math.max(0, e.clientY - from.y) : Math.min(0, e.clientY - from.y);
+    if (Math.abs(dy) > 4) draggedRef.current = true;
+    setDragPx(dy);
+  }
+
+  function onDragEnd(e: React.PointerEvent) {
+    const from = dragFromRef.current;
+    dragFromRef.current = null;
+    if (!from) return;
+    const dy = e.clientY - from.y;
+    const flick = Math.abs(dy) / Math.max(1, Date.now() - from.at) > 0.5; // px per ms
+    if (expanded && dy > (flick ? 12 : SNAP_PX)) setExpanded(false);
+    else if (!expanded && -dy > (flick ? 12 : SNAP_PX)) setExpanded(true);
+    setDragPx(0);
+  }
+
+  // While dragging, follow the finger; otherwise the class decides the position.
+  const sheetTransform = dragPx
+    ? expanded
+      ? `translateY(${dragPx}px)`
+      : `translateY(calc(100% - var(--mini-h) + ${dragPx}px))`
+    : undefined;
+
+  // Opening an episode always shows the full player.
+  function openEpisode(id: string) {
+    setExpanded(true);
+    setSelectedId(id);
+  }
+
+  // Closing stops playback and puts the sheet away entirely.
+  function dismissPlayer() {
+    const audio = audioRef.current;
+    if (audio && selectedId && !audio.ended) savePosition(selectedId, audio.currentTime * 1000, true);
+    audio?.pause();
+    loadedIdRef.current = null;
+    setPlaying(false);
+    setCurrentMs(0);
+    setDetail(null);
+    setChats([]);
+    setSelectedId(null);
+    setQueue(null);
+    setTab("transcript");
+  }
+
   // Called when the current episode finishes — mark it listened, then advance
   // to the next queued item.
   function handleEnded() {
@@ -766,8 +819,8 @@ export default function App() {
   }, [detail]);
   const activeTab: Tab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
 
-  // ================= HOME / EPISODES (with bottom nav) =================
-  if (selectedId === null) {
+  // ================= LIBRARY (always mounted, the sheet sits over it) =========
+  const library = (() => {
     const sorted = [...episodes].sort((a, b) => b.createdAt - a.createdAt);
     // Still being built: anything the pipeline has not finished or failed.
     const inFlight = sorted.filter((e) => e.status !== "ready" && e.status !== "failed");
@@ -796,7 +849,7 @@ export default function App() {
         >
           <button
             className="card"
-            onClick={() => (selecting ? toggleSelected(e.id) : setSelectedId(e.id))}
+            onClick={() => (selecting ? toggleSelected(e.id) : openEpisode(e.id))}
             aria-pressed={selecting ? selected : undefined}
           >
             <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
@@ -842,7 +895,7 @@ export default function App() {
     };
 
     return (
-      <div className="shell">
+      <div className={`shell${selectedId ? " with-mini" : ""}`}>
         {view === "home" && (
           <div className="page">
             <header className="home-top">
@@ -1423,7 +1476,7 @@ export default function App() {
         </nav>
       </div>
     );
-  }
+  })();
 
   // ================= NOW PLAYING =================
   const remainingMs = Math.max(0, durationMs - currentMs);
@@ -1431,15 +1484,116 @@ export default function App() {
   const hue = detail ? hueOf(detail.id) : 260;
 
   return (
-    <div className="now" style={{ ["--h" as string]: String(hue) } as React.CSSProperties}>
-      <div className="ambient" aria-hidden="true" />
-      <div className="now-inner">
+    <>
+      {library}
+
+      {selectedId && (
+        <div className="sheet-wrap">
+        <div
+          ref={sheetRef}
+          className={`sheet ${expanded ? "up" : "down"}${dragPx !== 0 ? " dragging" : ""}`}
+          style={{ ["--h" as string]: String(hue), transform: sheetTransform } as React.CSSProperties}
+          role="region"
+          aria-label="Now playing"
+        >
+          {/* Both media elements live at the sheet root: collapsing the sheet
+              must never unmount them, or playback stops. */}
+          <audio
+            ref={audioRef}
+            preload="metadata"
+            onLoadedMetadata={handleLoadedMetadata}
+            onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
+            onPlay={() => setPlaying(true)}
+            onPause={(e) => {
+              setPlaying(false);
+              // 'pause' also fires at the end; handleEnded owns that case.
+              if (detail && !e.currentTarget.ended) savePosition(detail.id, e.currentTarget.currentTime * 1000);
+            }}
+            onEnded={handleEnded}
+          />
+          <audio ref={answerAudioRef} preload="auto" />
+
+          <div
+            className="sheet-head"
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+          >
+            <span className="grab" aria-hidden="true" />
+          </div>
+
+          <div
+            className="mini"
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onClick={() => !draggedRef.current && setExpanded(true)}
+          >
+            <span className="mini-bar" aria-hidden="true">
+              <span style={{ width: `${progress}%` }} />
+            </span>
+            <span
+              className="mini-art"
+              style={detail ? coverStyle(detail.id) : undefined}
+              aria-hidden="true"
+            >
+              {KIND_GLYPH[detail?.sourceKind ?? ""] ?? "♫"}
+            </span>
+            <span className="mini-text">
+              <span className="mini-title">{detail?.title || "Loading…"}</span>
+              <span className="mini-sub">
+                {durationMs ? `${mmss(remainingMs)} left` : HOSTS}
+              </span>
+            </span>
+            <button
+              className="mini-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePlay();
+              }}
+              aria-label={playing ? "Pause" : "Play"}
+              disabled={!ready}
+            >
+              {playing ? "❚❚" : "▶"}
+            </button>
+            <button
+              className="mini-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                seekBy(30);
+              }}
+              aria-label="Forward 30 seconds"
+              disabled={!ready}
+            >
+              <span className="tp-num">30</span>↻
+            </button>
+            <button
+              className="mini-btn close"
+              onClick={(e) => {
+                e.stopPropagation();
+                dismissPlayer();
+              }}
+              aria-label="Close the player"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="sheet-body">
+            <div className="ambient" aria-hidden="true" />
+            <div className="now-inner">
         <div className="now-top">
-          <button className="pill-btn back" onClick={goBack} aria-label="Back to episodes">
+          <button
+            className="pill-btn back"
+            onClick={() => setExpanded(false)}
+            aria-label="Minimise the player"
+          >
             <span className="chev-down" aria-hidden="true">
               ⌄
             </span>
-            Episodes
+            Minimise
           </button>
           {queue && selectedId && queue.indexOf(selectedId) >= 0 ? (
             <span className="now-kind">
@@ -1481,19 +1635,6 @@ export default function App() {
 
             {ready && (
               <div className="controls">
-                <audio
-                  ref={audioRef}
-                  preload="metadata"
-                  onLoadedMetadata={handleLoadedMetadata}
-                  onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
-                  onPlay={() => setPlaying(true)}
-                  onPause={(e) => {
-                    setPlaying(false);
-                    // 'pause' also fires at the end; handleEnded owns that case.
-                    if (!e.currentTarget.ended) savePosition(detail.id, e.currentTarget.currentTime * 1000);
-                  }}
-                  onEnded={handleEnded}
-                />
                 <input
                   className="scrub"
                   type="range"
@@ -1537,8 +1678,6 @@ export default function App() {
 
                 {micSupported ? (
                   <div className="voice">
-                    {/* One element for every spoken answer, unlocked on press. */}
-                    <audio ref={answerAudioRef} preload="auto" />
                     <button
                       className={`talk ${recording ? "rec" : ""}`}
                       onMouseDown={startRecording}
@@ -1710,7 +1849,11 @@ export default function App() {
             )}
           </>
         )}
-      </div>
-    </div>
+            </div>
+          </div>
+        </div>
+        </div>
+      )}
+    </>
   );
 }
