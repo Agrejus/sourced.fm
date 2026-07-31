@@ -678,14 +678,12 @@ input {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--text);
   background: rgba(255, 255, 255, 0.07);
 }
 .mini-btn:hover { background: rgba(255, 255, 255, 0.14); }
 .mini-btn:disabled { opacity: 0.35; }
-.mini-btn.close { font-size: 12px; color: var(--muted); background: none; }
-.mini-btn .tp-num { font-size: 8px; }
 
 /* the full player scrolls inside the sheet */
 .sheet-body {
