@@ -120,6 +120,7 @@ export default function App() {
   const resumeForRef = useRef<string | null>(null); // episode still waiting for its resume seek
   const loadedIdRef = useRef<string | null>(null); // episode whose audio is in the element
   const sheetRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const dragFromRef = useRef<{ y: number; at: number } | null>(null);
   const draggedRef = useRef(false); // a drag must not also fire the tap-to-expand
 
@@ -744,12 +745,17 @@ export default function App() {
   // ---- the sheet: drag it up and down, or tap the mini bar ----
   const SNAP_PX = 64; // past this, the gesture decides; below it, it springs back
 
-  function onDragStart(e: React.PointerEvent) {
-    // Buttons in the mini bar handle their own taps.
-    if ((e.target as HTMLElement).closest("button")) return;
+  function onDragStart(e: React.PointerEvent, fromBody = false) {
+    // Controls handle their own gestures.
+    if ((e.target as HTMLElement).closest("button, input, textarea, a")) return;
+    // From the content, a drag only starts when the content is already at the
+    // top. Below that the gesture belongs to the transcript.
+    if (fromBody && (bodyRef.current?.scrollTop ?? 0) > 0) return;
     dragFromRef.current = { y: e.clientY, at: Date.now() };
     draggedRef.current = false;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    // Capturing on the body would swallow its scrolling, so only the handle
+    // and the mini row take the pointer.
+    if (!fromBody) (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   }
 
   function onDragMove(e: React.PointerEvent) {
@@ -1595,20 +1601,17 @@ export default function App() {
             </button>
           </div>
 
-          <div className="sheet-body">
+          <div
+            ref={bodyRef}
+            className="sheet-body"
+            onPointerDown={(e) => onDragStart(e, true)}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+          >
             <div className="ambient" aria-hidden="true" />
             <div className="now-inner">
         <div className="now-top">
-          <button
-            className="pill-btn back"
-            onClick={() => setExpanded(false)}
-            aria-label="Minimise the player"
-          >
-            <span className="chev-down" aria-hidden="true">
-              ⌄
-            </span>
-            Minimise
-          </button>
           {queue && selectedId && queue.indexOf(selectedId) >= 0 ? (
             <span className="now-kind">
               Playlist · {queue.indexOf(selectedId) + 1}/{queue.length}
