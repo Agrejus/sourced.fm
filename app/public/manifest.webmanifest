@@ -1,6 +1,6 @@
 {
-  "name": "Learn",
-  "short_name": "Learn",
+  "name": "Sourced.fm",
+  "short_name": "Sourced.fm",
   "description": "Fact-checked, interactive two-host podcasts from any article, X link, or topic.",
   "start_url": "/",
   "display": "standalone",

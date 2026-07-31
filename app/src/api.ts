@@ -10,14 +10,20 @@ export type Status =
   | "ready"
   | "failed";
 
+export type SourceKind = "article" | "tweet" | "topic" | "research";
+
 export interface EpisodeListItem {
   id: string;
   title: string;
   status: Status;
-  sourceKind: "article" | "tweet" | "topic";
+  sourceKind: SourceKind;
   durationMs: number | null;
   /** epoch ms when marked listened; null = not listened yet. Server-side, so it follows you across devices. */
   listenedAt: number | null;
+  /** Saved playback position in ms; 0 = start. Server-side, like listenedAt. */
+  positionMs: number;
+  /** What a long-running stage is doing right now (deep research); null when idle. */
+  note: string | null;
   createdAt: number;
 }
 
@@ -40,13 +46,15 @@ export interface EpisodeDetail {
   id: string;
   title: string;
   status: Status;
-  source: { kind: string; url?: string; topic?: string };
-  sourceKind: "article" | "tweet" | "topic";
+  source: { kind: string; url?: string; topic?: string; brief?: string; seedUrls?: string[] };
+  sourceKind: SourceKind;
   dossier: { sources: { title: string; url: string }[] } | null;
   script: { segments: Segment[] } | null;
   factcheck: { claims: Claim[] } | null;
   durationMs: number | null;
   listenedAt: number | null;
+  positionMs: number;
+  note: string | null;
   error: { stage: string; message: string } | null;
   createdAt: number;
 }
@@ -67,6 +75,13 @@ export const api = {
   listEpisodes: () => fetch("/api/episodes").then(json<EpisodeListItem[]>),
   getEpisode: (id: string) => fetch(`/api/episodes/${id}`).then(json<EpisodeDetail>),
   getChats: (id: string) => fetch(`/api/episodes/${id}/chats`).then(json<ChatTurn[]>),
+  // Deep research: a written assignment. Links inside it seed the research.
+  createResearch: (brief: string) =>
+    fetch("/api/episodes/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief }),
+    }).then(json<{ id: string; status: Status; source: { kind: string; seedUrls: string[] } }>),
   createEpisode: (input: string) =>
     fetch("/api/episodes", {
       method: "POST",
@@ -79,6 +94,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ listened }),
     }).then(json<{ id: string; listenedAt: number | null }>),
+  // keepalive lets the last report survive the page unloading (pagehide), which
+  // is exactly when the position matters most.
+  setPosition: (id: string, positionMs: number, keepalive = false) =>
+    fetch(`/api/episodes/${id}/position`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ positionMs }),
+      keepalive,
+    }).then(json<{ id: string; positionMs: number }>),
   askText: (id: string, question: string, positionMs: number) =>
     fetch(`/api/episodes/${id}/ask-text`, {
       method: "POST",

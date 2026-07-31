@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS episodes (
   audio_path      TEXT,
   duration_ms     INTEGER,
   listened_at     INTEGER,
+  position_ms     INTEGER NOT NULL DEFAULT 0,
+  stage_note      TEXT,
   attempts        INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL,
@@ -44,6 +46,12 @@ CREATE INDEX IF NOT EXISTS idx_chats_episode ON chats(episode_id, created_at);
 // Each entry is applied only when the column is missing, so boot is idempotent.
 const ADD_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: "episodes", column: "listened_at", ddl: "ALTER TABLE episodes ADD COLUMN listened_at INTEGER" },
+  {
+    table: "episodes",
+    column: "position_ms",
+    ddl: "ALTER TABLE episodes ADD COLUMN position_ms INTEGER NOT NULL DEFAULT 0",
+  },
+  { table: "episodes", column: "stage_note", ddl: "ALTER TABLE episodes ADD COLUMN stage_note TEXT" },
 ];
 
 function applyAddColumns(database: Database): void {
@@ -81,6 +89,8 @@ export interface EpisodeRow {
   audio_path: string | null;
   duration_ms: number | null;
   listened_at: number | null;
+  position_ms: number;
+  stage_note: string | null;
   attempts: number;
   next_attempt_at: number;
   created_at: number;
@@ -213,11 +223,37 @@ export function createAccessors(database: Database) {
   // Listened state is user bookkeeping, deliberately outside the stage-transition
   // path (PATCH_COLUMNS): it can be set at any status and never moves the pipeline.
   // listenedAt of null clears the mark. Returns false when the episode is missing.
+  // Marking listened also clears the saved position: a finished episode restarts
+  // from the beginning, so 'listened' and 'part way through' can never both hold.
   function setEpisodeListened(id: string, listenedAt: number | null, now: number): boolean {
+    const sql =
+      listenedAt === null
+        ? "UPDATE episodes SET listened_at = NULL, updated_at = ? WHERE id = ?"
+        : "UPDATE episodes SET listened_at = ?, position_ms = 0, updated_at = ? WHERE id = ?";
+    const values = listenedAt === null ? [now, id] : [listenedAt, now, id];
+    return database.query(sql).run(...values).changes > 0;
+  }
+
+  // Free-text note on what a long-running stage is doing right now ("researching
+  // 3 of 5: ..."). Progress only — nothing reads it back, and a null clears it.
+  function setEpisodeNote(id: string, note: string | null, now: number): void {
+    database
+      .query("UPDATE episodes SET stage_note = ?, updated_at = ? WHERE id = ?")
+      .run(note, now, id);
+  }
+
+  // Playback position, reported by the player while it plays and when it stops.
+  // Clamped to the episode duration when one is known, so a rounding overshoot
+  // at the end cannot store a position past the audio.
+  function setEpisodePosition(id: string, positionMs: number, now: number): boolean {
+    const ep = getEpisode(id);
+    if (!ep) return false;
+    const ceiling = ep.duration_ms ?? Number.MAX_SAFE_INTEGER;
+    const clamped = Math.min(Math.max(0, Math.floor(positionMs)), ceiling);
     return (
       database
-        .query("UPDATE episodes SET listened_at = ?, updated_at = ? WHERE id = ?")
-        .run(listenedAt, now, id).changes > 0
+        .query("UPDATE episodes SET position_ms = ?, updated_at = ? WHERE id = ?")
+        .run(clamped, now, id).changes > 0
     );
   }
 
@@ -256,6 +292,8 @@ export function createAccessors(database: Database) {
     scheduleRetry,
     resetStuckSynthesizing,
     setEpisodeListened,
+    setEpisodePosition,
+    setEpisodeNote,
     insertChat,
     listChats,
   };

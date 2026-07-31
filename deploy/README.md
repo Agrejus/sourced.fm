@@ -59,11 +59,11 @@ git init --bare ~/Repos/podcast-learning.git
 git -C ~/Repos/podcast-learning.git config receive.denyCurrentBranch updateInstead
 # clone the working tree the bare repo updates into ~/Repos/podcast-learning
 # from your machine:
-git remote add box ssh://jdemeuse@192.168.68.85/~/Repos/podcast-learning.git
+git remote add box ssh://<user>@<box-host>/~/Repos/podcast-learning.git
 git push box build/podcast-learning
 ```
 
-(`rsync -az ./ jdemeuse@192.168.68.85:~/Repos/podcast-learning/` also works.)
+(`rsync -az ./ <user>@<box-host>:~/Repos/podcast-learning/` also works.)
 
 ## 4. Build the PWA, then bring the stack up
 

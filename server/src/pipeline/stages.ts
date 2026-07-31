@@ -3,6 +3,7 @@ import type { Script } from "../domain";
 import type { SourceInput } from "../fetchers/types";
 import { fetcherFor } from "../fetchers";
 import type { SpeechProvider } from "../speech";
+import { toSpeakable } from "../speech/speakable";
 import { scriptStage } from "./script";
 import { factcheckStage } from "./factcheck";
 
@@ -25,10 +26,16 @@ export function sourceStage(deps: StageDeps): Stage {
     name: "source",
     async run(ep) {
       const input = JSON.parse(ep.source_json) as SourceInput;
-      const result = await fetcherFor(input.kind).fetch(input);
+      // Deep research takes minutes; its progress notes land on the row so the
+      // app can show what it is doing. The note is cleared once sourcing ends.
+      const result = await fetcherFor(input.kind).fetch(input, (note) =>
+        deps.accessors.setEpisodeNote(ep.id, note, deps.now()),
+      );
       if (!result.ok) {
+        deps.accessors.setEpisodeNote(ep.id, null, deps.now());
         throw new Error(`${result.error.code}: ${result.error.message}`);
       }
+      deps.accessors.setEpisodeNote(ep.id, null, deps.now());
       const dossier = result.value;
       deps.accessors.updateEpisodeStage(
         ep.id,
@@ -53,9 +60,15 @@ export function synthesizeStage(deps: StageDeps): Stage {
       try {
         if (!ep.script_json) throw new Error("synthesize: episode has no script_json");
         const script = JSON.parse(ep.script_json) as Script;
+        // The speech service gets the spoken form; script_json keeps the written
+        // one, so the transcript still shows ".tsx" while the audio says T S X.
         const audio = await deps.speech.synthesizeEpisode(
           ep.id,
-          script.segments.map((s) => ({ idx: s.idx, speaker: s.speaker, text: s.text })),
+          script.segments.map((s) => ({
+            idx: s.idx,
+            speaker: s.speaker,
+            text: toSpeakable(s.text),
+          })),
         );
         const stamped: Script = {
           ...script,

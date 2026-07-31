@@ -10,9 +10,11 @@ function appWith(a: Accessors) {
   const api = createEpisodesApi({ accessors: a, now: () => 1 });
   const app = new Hono();
   app.post("/api/episodes", (c) => api.create(c));
+  app.post("/api/episodes/research", (c) => api.createResearch(c));
   app.get("/api/episodes", (c) => api.list(c));
   app.get("/api/episodes/:id", (c) => api.get(c));
   app.put("/api/episodes/:id/listened", (c) => api.setListened(c));
+  app.put("/api/episodes/:id/position", (c) => api.setPosition(c));
   app.get("/api/episodes/:id/audio", (c) => api.audio(c));
   app.get("/api/episodes/:id/chats", (c) => api.chats(c));
   return app;
@@ -172,4 +174,124 @@ test("PUT /api/episodes/:id/listened rejects a non-boolean body and unknown ids"
     body: JSON.stringify({ listened: true }),
   });
   expect(missing.status).toBe(404);
+});
+
+test("PUT /api/episodes/:id/position saves progress and reports it in both projections", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const ep = a.insertEpisode({ kind: "article", url: "https://a.com/1" }, 1000);
+  const app = appWith(a);
+
+  const before = (await (await app.request("/api/episodes")).json()) as { positionMs: number }[];
+  expect(before[0]!.positionMs).toBe(0);
+
+  const saved = await app.request(`/api/episodes/${ep.id}/position`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ positionMs: 61_500 }),
+  });
+  expect(saved.status).toBe(200);
+  expect(((await saved.json()) as { positionMs: number }).positionMs).toBe(61_500);
+
+  const detail = (await (await app.request(`/api/episodes/${ep.id}`)).json()) as { positionMs: number };
+  expect(detail.positionMs).toBe(61_500);
+});
+
+test("PUT /api/episodes/:id/position rejects a non-number and an unknown id", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const ep = a.insertEpisode({ kind: "article", url: "https://a.com/1" }, 1000);
+  const app = appWith(a);
+
+  for (const positionMs of ["12", null, Number.NaN]) {
+    const res = await app.request(`/api/episodes/${ep.id}/position`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ positionMs }),
+    });
+    expect(res.status).toBe(400);
+  }
+
+  const missing = await app.request("/api/episodes/nope/position", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ positionMs: 10 }),
+  });
+  expect(missing.status).toBe(404);
+});
+
+test("PUT /api/episodes/:id/listened clears a saved position over HTTP", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const ep = a.insertEpisode({ kind: "article", url: "https://a.com/1" }, 1000);
+  const app = appWith(a);
+  await app.request(`/api/episodes/${ep.id}/position`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ positionMs: 30_000 }),
+  });
+  await app.request(`/api/episodes/${ep.id}/listened`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listened: true }),
+  });
+  const detail = (await (await app.request(`/api/episodes/${ep.id}`)).json()) as {
+    positionMs: number;
+    listenedAt: number | null;
+  };
+  expect(detail.positionMs).toBe(0);
+  expect(detail.listenedAt).toBe(1);
+});
+
+test("POST /api/episodes/research queues a research episode with its seed links", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const app = appWith(a);
+  const brief = "Research solid-state batteries, focus on manufacturing. Start from https://example.com/x";
+  const res = await app.request("/api/episodes/research", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brief }),
+  });
+  expect(res.status).toBe(201);
+  const body = (await res.json()) as {
+    status: string;
+    source: { kind: string; brief: string; seedUrls: string[] };
+  };
+  expect(body.status).toBe("submitted");
+  expect(body.source.kind).toBe("research");
+  expect(body.source.brief).toBe(brief);
+  expect(body.source.seedUrls).toEqual(["https://example.com/x"]);
+
+  // It shows up in the list as a research episode, awaiting the pipeline.
+  const list = (await (await app.request("/api/episodes")).json()) as {
+    sourceKind: string;
+    note: string | null;
+  }[];
+  expect(list[0]!.sourceKind).toBe("research");
+  expect(list[0]!.note).toBeNull();
+});
+
+test("POST /api/episodes/research rejects an empty or oversized brief", async () => {
+  const app = appWith(createAccessors(createDb(":memory:")));
+  for (const brief of ["", "   ", undefined]) {
+    const res = await app.request("/api/episodes/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief }),
+    });
+    expect(res.status).toBe(400);
+  }
+  const tooLong = await app.request("/api/episodes/research", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brief: "x".repeat(4001) }),
+  });
+  expect(tooLong.status).toBe(400);
+});
+
+test("a research brief far longer than the 500-char topic limit is accepted", async () => {
+  const a = createAccessors(createDb(":memory:"));
+  const res = await appWith(a).request("/api/episodes/research", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brief: "Research this deeply. " + "detail ".repeat(200) }),
+  });
+  expect(res.status).toBe(201);
 });

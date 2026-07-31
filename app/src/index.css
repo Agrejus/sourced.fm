@@ -89,32 +89,81 @@ input {
   padding: max(28px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom));
 }
 
-/* ---- home hero ---- */
-.hero {
-  padding: 10px 2px 6px;
+/* ---- home header, stats, shelves ---- */
+.home-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 2px 22px;
 }
-.hero-eyebrow {
+.brand {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: 7px;
+  font-size: 17px;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
+}
+.brand span {
   color: var(--accent);
-  margin-bottom: 16px;
 }
-.hero-title {
-  margin: 0 0 14px;
-  font-size: 30px;
-  line-height: 1.12;
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13.5px;
+  font-weight: 650;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  transition: background 0.15s;
+}
+.ghost-btn:hover {
+  background: rgba(124, 108, 255, 0.22);
+}
+.stats {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid transparent;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.stat:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.stat-n {
+  font-size: 22px;
   font-weight: 800;
-  text-wrap: balance;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
 }
-.hero-sub {
-  margin: 0 0 22px;
+.stat-l {
+  font-size: 11.5px;
   color: var(--muted);
-  font-size: 15px;
-  max-width: 34em;
+}
+.section-head h2 .spinner {
+  margin-right: 7px;
+  color: var(--accent);
+}
+.caught-up {
+  margin: -6px 4px 12px;
+  font-size: 13.5px;
+}
+.empty-cta {
+  margin-top: 16px;
 }
 .composer {
   display: flex;
@@ -130,21 +179,9 @@ input {
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.composer.big input {
-  padding: 15px 20px;
-  font-size: 15.5px;
-}
 .composer input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.25);
-}
-.hero-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 16px 2px 0;
-  font-size: 13px;
-  color: var(--muted);
 }
 
 /* ---- home sections + episodes head ---- */
@@ -340,6 +377,11 @@ input {
   background: rgba(61, 220, 151, 0.14);
   color: var(--green);
 }
+.chip.resume {
+  background: rgba(124, 108, 255, 0.16);
+  color: var(--accent);
+  text-transform: none; /* keeps "4:30 left" lowercase, not "4:30 Left" */
+}
 .kind-tag {
   font-size: 11.5px;
   color: var(--muted);
@@ -361,29 +403,109 @@ input {
 .card-row.is-listened .card-title {
   opacity: 0.55;
 }
-.listen-toggle {
-  width: 38px;
-  height: 38px;
+/* Thin progress bar under the card meta, only for part-played episodes. */
+.card-progress {
+  display: block;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.card-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+/* ---- multi-select on the Episodes screen ---- */
+.select-btn {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+  padding: 4px 2px;
+}
+.select-hint {
+  margin: -10px 2px 14px;
+  font-size: 13px;
+}
+/* Selection marker. A span, not a button — the whole row is the hit target. */
+.card-select {
+  width: 30px;
+  height: 30px;
   flex: none;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 15px;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-size: 14px;
+  color: transparent;
+  border: 1.5px solid var(--line);
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.listen-toggle:hover {
+.card-select.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.card-row.is-selected .card {
   background: var(--surface-2);
-  color: var(--text);
+  border-color: rgba(124, 108, 255, 0.5);
 }
-.listen-toggle.on {
-  background: rgba(61, 220, 151, 0.16);
-  border-color: rgba(61, 220, 151, 0.35);
-  color: var(--green);
+
+/* Action bar, above the tab bar, only while selecting. */
+.selbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(66px + env(safe-area-inset-bottom));
+  z-index: 21;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 10px 14px 12px;
+  background: rgba(16, 16, 24, 0.94);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid var(--line);
+}
+.selbar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.selbar-count {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.selbar-row {
+  display: flex;
+  gap: 8px;
+}
+.selbar-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 11px 16px;
+  outline: none;
+}
+.selbar-row input:focus {
+  border-color: var(--accent);
+}
+.selbar-row .btn-primary {
+  padding: 11px 16px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+/* Room for the action bar so the last card is never covered. */
+.page.selecting {
+  padding-bottom: calc(190px + env(safe-area-inset-bottom));
 }
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 0 2px 14px;
 }
@@ -1120,4 +1242,105 @@ input {
 }
 .tabbar .tab-item {
   max-width: 150px;
+}
+
+/* ---- create screen ---- */
+.modes {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.mode {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid transparent;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mode:hover {
+  background: var(--surface-2);
+}
+.mode.on {
+  background: rgba(124, 108, 255, 0.14);
+  border-color: rgba(124, 108, 255, 0.45);
+}
+.mode-name {
+  font-size: 14px;
+  font-weight: 700;
+}
+.mode-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.mode.on .mode-sub {
+  color: rgba(255, 255, 255, 0.66);
+}
+.mode-hint {
+  margin: 0 2px 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.brief {
+  width: 100%;
+  resize: vertical;
+  min-height: 150px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.5;
+}
+.brief:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.brief::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+.brief-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 2px 0;
+}
+.brief-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.brief-sent {
+  margin: 14px 2px 0;
+  padding: 11px 14px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  background: rgba(124, 108, 255, 0.14);
+  color: var(--text);
+}
+
+/* Live stage note ("researching 3 of 5: ...") while an episode is generating. */
+.card-note {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent);
+  margin-top: 2px;
+}
+.now-note {
+  margin: 10px auto 0;
+  max-width: 340px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
 }

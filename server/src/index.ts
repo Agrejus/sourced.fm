@@ -19,9 +19,11 @@ const now = () => Date.now();
 
 const episodes = createEpisodesApi({ accessors, now });
 app.post("/api/episodes", (c) => episodes.create(c));
+app.post("/api/episodes/research", (c) => episodes.createResearch(c));
 app.get("/api/episodes", (c) => episodes.list(c));
 app.get("/api/episodes/:id", (c) => episodes.get(c));
 app.put("/api/episodes/:id/listened", (c) => episodes.setListened(c));
+app.put("/api/episodes/:id/position", (c) => episodes.setPosition(c));
 app.get("/api/episodes/:id/audio", (c) => episodes.audio(c));
 app.get("/api/episodes/:id/chats", (c) => episodes.chats(c));
 

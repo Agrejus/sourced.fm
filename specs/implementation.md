@@ -214,11 +214,17 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
 `db.ts` exposes typed functions only — no raw SQL outside this file:
 `insertEpisode`, `getEpisode`, `listEpisodes`, `claimNextPipelineEpisode`,
 `updateEpisodeStage` (asserts expected prior status — throws on mismatch),
-`failEpisode`, `setEpisodeListened`, `insertChat`, `listChats`.
+`failEpisode`, `setEpisodeListened`, `setEpisodePosition`, `setEpisodeNote`,
+`insertChat`, `listChats`.
 
-Listened state is user bookkeeping, not a pipeline stage: `listened_at` is
-outside `PATCH_COLUMNS`, so a stage transition can never touch it and marking
-an episode listened can never move it through the pipeline.
+Listened state and playback position are user bookkeeping, not pipeline stages:
+`listened_at` and `position_ms` are outside `PATCH_COLUMNS`, so a stage
+transition can never touch them, and writing either one can never move an
+episode through the pipeline.
+
+`setEpisodeListened` clears `position_ms` when it marks an episode listened, so
+'listened' and 'part way through' are mutually exclusive by construction.
+`setEpisodePosition` clamps to `duration_ms` when the duration is known.
 
 ### 2.2 SourceFetcher trio (design.md §2.3, frozen interfaces)
 
@@ -228,6 +234,7 @@ an episode listened can never move it through the pipeline.
 export type SourceInput =
   | { kind: "article"; url: string }
   | { kind: "tweet"; url: string }
+  | { kind: "research"; brief: string; seedUrls: string[] }
   | { kind: "topic"; topic: string };
 export type Dossier = { markdown: string; title: string; sources: { title: string; url: string }[] };
 export type FetchError = { code: "http" | "empty" | "timeout" | "no_sources"; message: string };
@@ -280,6 +287,24 @@ coding** and pin what you found in a comment + fixture
 lacks thread expansion, fetch each `replying_to`-chained same-author tweet by
 id (bounded: max 25). No API key. Resolver down ⇒ `{code:"http"}` (retry via
 pipeline backoff).
+
+**`webagent.ts` (shared):** the search-and-read loop both research paths use.
+`runWebAgent({system, user, maxRounds, sources})` runs the tool loop and returns
+the model's final prose; every URL a tool returns is registered in the caller's
+`sources` map, so one citation set spans many agent runs. `harvestInlineUrls`
+adds any URL the prose cites but no tool returned.
+
+**`deepresearch.ts` (research):** the deep path, three stages inside the source
+stage. (1) Read up to 3 `seedUrls` via `web_fetch`; a dead seed is recorded as
+unreadable, not fatal. (2) `chatJSON(PlanSchema, DEEP_RESEARCH_PLAN_PROMPT, …)`
+returns `{title, angle, questions[3..6]}`. (3) One `runWebAgent` per question
+(max 5 rounds each, sequential — concurrency stays 1) with
+`DEEP_RESEARCH_SECTION_PROMPT`. (4) One `chatText` synthesis over every note
+with `DEEP_RESEARCH_SYNTHESIS_PROMPT` produces the dossier markdown; the plan's
+title becomes the episode title. Each stage calls `onProgress`, which the source
+stage writes to `stage_note`. Dossier under 2,000 chars ⇒ `{code:"empty"}`;
+fewer than 3 sources ⇒ `{code:"no_sources"}`. Prompt text lives verbatim in
+`server/src/prompts.ts` (`DEEP_RESEARCH_*`), not in Appendix B.
 
 **`research.ts` (topic):** an Ollama chat agent loop with the `web_search` /
 `web_fetch` function tools (`WEB_TOOLS` in `llm.ts`), `RESEARCH_SYSTEM_PROMPT`
@@ -492,10 +517,12 @@ writes 2 chat rows per turn.
 | Method + path | Request | Response |
 |---|---|---|
 | `GET /api/healthz` | — | `{"ok":true}` |
+| `POST /api/episodes/research` | JSON `{brief}` — a written research assignment, max 4,000 chars. Links inside it become `seedUrls` | `201 {id, status:"submitted", source:{kind:"research",brief,seedUrls}}`; empty/oversized → `400 {error}` |
 | `POST /api/episodes` | JSON `{input: "<url or topic text>"}` **or** raw `text/plain` body (iOS Shortcut); server runs `classifyInput` (§2.2) | `201 {id, status:"submitted", source:{kind,...}}`; rejected input → `400 {error}` |
-| `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,listenedAt,createdAt}]` newest first; `listenedAt` is null until listened |
+| `GET /api/episodes` | — | `[{id,title,status,sourceKind,durationMs,listenedAt,positionMs,note,createdAt}]` newest first; `listenedAt` is null until listened, `positionMs` is 0 until playback reports a position |
 | `GET /api/episodes/:id` | — | full episode incl. `source`, `dossier.sources`, `factcheck.claims`, `script.segments[].startMs`, `error`. **`dossier.markdown` is NEVER returned by any route** — it is server-side grounding material only; clients get `dossier.sources` |
-| `PUT /api/episodes/:id/listened` | JSON `{listened: boolean}` | `200 {id, listenedAt}` (`listenedAt` null when unmarked); non-boolean → `400 {error}`; unknown id → `404 {error}` |
+| `PUT /api/episodes/:id/listened` | JSON `{listened: boolean}` | `200 {id, listenedAt}` (`listenedAt` null when unmarked); also clears `position_ms` when marking listened; non-boolean → `400 {error}`; unknown id → `404 {error}` |
+| `PUT /api/episodes/:id/position` | JSON `{positionMs: number}` | `200 {id, positionMs}` (clamped to `durationMs`); non-finite/non-number → `400 {error}`; unknown id → `404 {error}`. The player reports every 10s while playing, and on pause, page-hide, unload, and leaving the player |
 | `GET /api/episodes/:id/audio` | supports `Range` | `200`/`206 audio/mpeg`, `Accept-Ranges: bytes` |
 | `GET /api/episodes/:id/chats` | — | `[{role,text,positionMs,createdAt}]` |
 | `POST .../ask`, `POST .../ask-text` | see M3 | see M3 |
@@ -617,6 +644,8 @@ CREATE TABLE IF NOT EXISTS episodes (
   audio_path      TEXT,
   duration_ms     INTEGER,
   listened_at     INTEGER,                      -- epoch ms; NULL = not listened yet
+  position_ms     INTEGER NOT NULL DEFAULT 0,   -- saved playback position; 0 = start
+  stage_note      TEXT,                         -- live progress note from a long stage; NULL when idle
   attempts        INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER NOT NULL DEFAULT 0,   -- epoch ms
   created_at      INTEGER NOT NULL,             -- epoch ms

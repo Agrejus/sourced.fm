@@ -10,6 +10,27 @@ function mmss(ms: number): string {
 
 const HOSTS = "Maya & Sam";
 
+// Resume rules. A position inside the first 15s is not worth restoring, and one
+// within 15s of the end means the episode is effectively done — both start over.
+const RESUME_MIN_MS = 15_000;
+const NEAR_END_MS = 15_000;
+const REPORT_EVERY_MS = 10_000;
+
+type Progress = "unlistened" | "progress" | "listened";
+
+// Single source of truth for the three library states, used by the filters, the
+// cards, and the home screen. Works for list items and the episode detail alike.
+function progressOf(e: {
+  listenedAt: number | null;
+  positionMs: number;
+  durationMs: number | null;
+}): Progress {
+  if (e.listenedAt !== null) return "listened";
+  const duration = e.durationMs ?? 0;
+  const nearEnd = duration > 0 && e.positionMs >= duration - NEAR_END_MS;
+  return e.positionMs >= RESUME_MIN_MS && !nearEnd ? "progress" : "unlistened";
+}
+
 // Deterministic per-episode hue so every episode gets its own color world —
 // artwork gradient in the library, and the ambient wash + accent on the player.
 function hueOf(seed: string): number {
@@ -22,7 +43,7 @@ function coverStyle(seed: string) {
   const b = (a + 40) % 360;
   return { backgroundImage: `linear-gradient(140deg, hsl(${a} 74% 56%), hsl(${b} 70% 42%))` };
 }
-const KIND_GLYPH: Record<string, string> = { article: "¶", tweet: "𝕏", topic: "✦" };
+const KIND_GLYPH: Record<string, string> = { article: "¶", tweet: "𝕏", topic: "✦", research: "⌕" };
 
 const SpeechRecognitionImpl =
   (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
@@ -48,8 +69,18 @@ export default function App() {
   const [wakeOn, setWakeOn] = useState(false); // opt-in: keeps the mic closed during normal playback
   const [listening, setListening] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
-  const [view, setView] = useState<"home" | "episodes" | "playlists">("home");
-  const [filter, setFilter] = useState<"all" | "unlistened" | "listened">("all");
+  const [view, setView] = useState<"home" | "episodes" | "create" | "playlists">("home");
+  const [mode, setMode] = useState<"link" | "deep">("link");
+  const [brief, setBrief] = useState("");
+  const [researchSent, setResearchSent] = useState<string | null>(null);
+  const [linkSent, setLinkSent] = useState<string | null>(null);
+
+  // Multi-select on the Episodes screen, for building a playlist in one pass.
+  // selectedIds keeps selection order, which becomes the playlist order.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionName, setSelectionName] = useState("");
+  const [filter, setFilter] = useState<"all" | Progress>("all");
 
   // Playlists (on-device). openPlaylistId drives the playlist-detail screen;
   // queue is the running listen order that auto-advances when an episode ends.
@@ -63,8 +94,19 @@ export default function App() {
   const recognitionRef = useRef<{ start: () => void; stop: () => void } | null>(null);
   const interruptingRef = useRef(false);
   const autoplayRef = useRef(false); // request autoplay after the next detail loads
+  const lastSavedMsRef = useRef(-1); // last position written, to skip no-op writes
+  const resumeForRef = useRef<string | null>(null); // episode still waiting for its resume seek
+  const loadedIdRef = useRef<string | null>(null); // episode whose audio is in the element
 
   useEffect(() => savePlaylists(playlists), [playlists]);
+
+  // Leaving the Episodes screen abandons an in-progress selection.
+  useEffect(() => {
+    if (view === "episodes") return;
+    setSelectMode(false);
+    setSelectedIds([]);
+    setSelectionName("");
+  }, [view]);
 
   const loadEpisodes = useCallback(async () => {
     try {
@@ -85,8 +127,15 @@ export default function App() {
   const markListened = useCallback(
     async (id: string, listened: boolean) => {
       const at = listened ? Date.now() : null;
-      setEpisodes((es) => es.map((e) => (e.id === id ? { ...e, listenedAt: at } : e)));
-      setDetail((d) => (d && d.id === id ? { ...d, listenedAt: at } : d));
+      // The server clears the saved position when an episode is marked listened.
+      const patch = <T extends { listenedAt: number | null; positionMs: number }>(e: T): T => ({
+        ...e,
+        listenedAt: at,
+        positionMs: listened ? 0 : e.positionMs,
+      });
+      setEpisodes((es) => es.map((e) => (e.id === id ? patch(e) : e)));
+      setDetail((d) => (d && d.id === id ? patch(d) : d));
+      if (listened) lastSavedMsRef.current = 0;
       try {
         await api.setListened(id, listened);
       } catch {
@@ -97,6 +146,19 @@ export default function App() {
     [loadEpisodes],
   );
 
+  // Report where playback got to. Called on a timer while playing, and again on
+  // every stop: pause, leaving the player, hiding the tab, unloading the page.
+  const savePosition = useCallback((id: string, ms: number, force = false) => {
+    const rounded = Math.max(0, Math.round(ms));
+    if (!force && Math.abs(rounded - lastSavedMsRef.current) < 1000) return;
+    lastSavedMsRef.current = rounded;
+    setEpisodes((es) => es.map((e) => (e.id === id ? { ...e, positionMs: rounded } : e)));
+    setDetail((d) => (d && d.id === id ? { ...d, positionMs: rounded } : d));
+    void api.setPosition(id, rounded, force).catch(() => {
+      /* the next report or the 5s poll reconciles */
+    });
+  }, []);
+
   // Episode list + 5s poll (drives optimistic entries to ready/failed).
   useEffect(() => {
     void loadEpisodes();
@@ -106,6 +168,8 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedId) return;
+    resumeForRef.current = selectedId; // this episode still owes us a resume seek
+    lastSavedMsRef.current = -1;
     void loadDetail(selectedId);
     // Keep refreshing while the open episode is still generating so the player
     // rolls from "generating…" to the ready transport without a manual reload.
@@ -123,13 +187,88 @@ export default function App() {
   // Media Session — lock-screen controls.
   useEffect(() => {
     if (!ready || !("mediaSession" in navigator)) return;
-    navigator.mediaSession.metadata = new MediaMetadata({ title: detail!.title, artist: "Learn" });
+    navigator.mediaSession.metadata = new MediaMetadata({ title: detail!.title, artist: "Sourced.fm" });
     const audio = audioRef.current!;
     navigator.mediaSession.setActionHandler("play", () => void audio.play());
     navigator.mediaSession.setActionHandler("pause", () => audio.pause());
     navigator.mediaSession.setActionHandler("seekbackward", () => (audio.currentTime -= 15));
     navigator.mediaSession.setActionHandler("seekforward", () => (audio.currentTime += 30));
-  }, [ready, detail]);
+    // Only offer next-track while a playlist queue is actually running.
+    const next = nextInQueue(selectedId);
+    navigator.mediaSession.setActionHandler("nexttrack", next ? () => playNow(next) : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, detail, queue, selectedId]);
+
+  // Jump to the saved position once the audio knows its own length. Runs once per
+  // episode; a position near the start or near the end is ignored (see the rules
+  // at the top of this file), so those episodes begin at zero.
+  const applyResume = useCallback((audio: HTMLAudioElement, ep: EpisodeDetail) => {
+    if (resumeForRef.current !== ep.id) return;
+    resumeForRef.current = null;
+    lastSavedMsRef.current = ep.positionMs;
+    if (progressOf(ep) !== "progress") return;
+    audio.currentTime = ep.positionMs / 1000;
+    setCurrentMs(ep.positionMs);
+  }, []);
+
+  function handleLoadedMetadata() {
+    const audio = audioRef.current;
+    if (audio && detail) applyResume(audio, detail);
+  }
+
+  // The <audio> element owns its own src — it is NOT a React prop. The queue
+  // advance has to swap the source and call play() synchronously inside the
+  // 'ended' handler, because iOS refuses a play() that happens after an await
+  // (and the old flow awaited a detail fetch first). A src prop would re-set the
+  // attribute on the next render and restart the audio we just started.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !ready || !detail) return;
+    // `selectedId` is the authority on what should be playing; `detail` lags it by
+    // one fetch after a queue advance. Acting on a stale detail here would load
+    // the episode that just finished and abort the one we started.
+    if (detail.id !== selectedId) return;
+    // loadedIdRef — not the element's src — decides whether a load is needed.
+    if (loadedIdRef.current === detail.id && audio.src) {
+      if (audio.readyState >= 1) applyResume(audio, detail);
+      return;
+    }
+    loadedIdRef.current = detail.id;
+    audio.src = api.audioUrl(detail.id);
+    if (autoplayRef.current) {
+      autoplayRef.current = false;
+      void audio.play().catch(() => setPlaying(false));
+    }
+  }, [ready, detail, selectedId, applyResume]);
+
+  // While playing, report every 10 seconds. A crash or a force-quit then costs
+  // at most 10 seconds of progress.
+  useEffect(() => {
+    if (!playing || !selectedId) return;
+    const t = setInterval(() => {
+      const audio = audioRef.current;
+      if (audio && !audio.ended) savePosition(selectedId, audio.currentTime * 1000);
+    }, REPORT_EVERY_MS);
+    return () => clearInterval(t);
+  }, [playing, selectedId, savePosition]);
+
+  // Hiding the tab or closing the app is a stop too — flush the position, with
+  // keepalive so the request outlives the page.
+  useEffect(() => {
+    if (!selectedId) return;
+    const flush = () => {
+      const audio = audioRef.current;
+      if (!audio || audio.ended) return;
+      savePosition(selectedId, audio.currentTime * 1000, true);
+    };
+    const onVisibility = () => document.visibilityState === "hidden" && flush();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [selectedId, savePosition]);
 
   // When we advance through a queue, autoplay the episode once it's loaded.
   useEffect(() => {
@@ -141,14 +280,42 @@ export default function App() {
 
   async function submit() {
     const value = input.trim();
-    if (!value) return;
-    setInput("");
+    if (!value || busy) return;
+    setBusy(true);
     try {
-      const created = await api.createEpisode(value);
+      await api.createEpisode(value);
+      setInput("");
+      setLinkSent(value.length > 60 ? `${value.slice(0, 59)}…` : value);
       await loadEpisodes();
-      setSelectedId(created.id);
     } catch (e) {
       alert(`Submit failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function goCreate(next: "link" | "deep" = "link") {
+    setMode(next);
+    setLinkSent(null);
+    setResearchSent(null);
+    setView("create");
+  }
+
+  // Deep research runs for minutes, so the screen confirms and gets out of the
+  // way rather than jumping into an episode that has nothing to play yet.
+  async function submitResearch() {
+    const assignment = brief.trim();
+    if (!assignment || busy) return;
+    setBusy(true);
+    try {
+      await api.createResearch(assignment);
+      setBrief("");
+      setResearchSent(assignment);
+      await loadEpisodes();
+    } catch (e) {
+      alert(`Research request failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -300,13 +467,37 @@ export default function App() {
     setCurrentMs(ms);
   }
   function goBack() {
-    audioRef.current?.pause();
+    loadedIdRef.current = null;
+    const audio = audioRef.current;
+    if (audio && selectedId && !audio.ended) savePosition(selectedId, audio.currentTime * 1000, true);
+    audio?.pause();
     setPlaying(false);
     setCurrentMs(0);
     setDetail(null);
     setChats([]);
     setSelectedId(null);
     setTab("transcript");
+  }
+
+  // ---- multi-select -> new playlist ----
+  function toggleSelected(id: string) {
+    setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  }
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedIds([]);
+    setSelectionName("");
+  }
+  // Builds the playlist in selection order, then opens it so the order is visible
+  // and reorderable straight away.
+  function createPlaylistFromSelection() {
+    if (selectedIds.length === 0) return;
+    const name = selectionName.trim() || `Playlist ${playlists.length + 1}`;
+    const pl: Playlist = { id: newId(), name, episodeIds: [...selectedIds] };
+    setPlaylists((ps) => [...ps, pl]);
+    exitSelectMode();
+    setOpenPlaylistId(pl.id);
+    setView("playlists");
   }
 
   // ---- playlist mutations ----
@@ -358,22 +549,51 @@ export default function App() {
     if (playable.length === 0) return;
     const first = startId && playable.includes(startId) ? startId : playable[0]!;
     setQueue(playable);
-    autoplayRef.current = true;
-    setSelectedId(first);
+    // A tap started this, so the element is user-activated: load and play now.
+    playNow(first);
   }
+  // The next episode in the running queue, if there is one.
+  function nextInQueue(fromId: string | null): string | undefined {
+    if (!queue || !fromId) return undefined;
+    const i = queue.indexOf(fromId);
+    return i >= 0 ? queue[i + 1] : undefined;
+  }
+
+  // Start `id` on the existing element right now. Called from the 'ended' handler
+  // and from the lock-screen next-track button, both of which must stay
+  // synchronous — see the src effect above.
+  function playNow(id: string) {
+    const audio = audioRef.current;
+    resumeForRef.current = id;
+    lastSavedMsRef.current = -1;
+    setCurrentMs(0);
+    if (audio) {
+      loadedIdRef.current = id; // claim it before the effect sees a stale detail
+      audio.src = api.audioUrl(id);
+      autoplayRef.current = false; // started here, so the effect must not re-start it
+      void audio.play().catch(() => setPlaying(false));
+    } else {
+      // No element yet (opening the player cold) — let the effect start it.
+      autoplayRef.current = true;
+    }
+    setSelectedId(id);
+  }
+
   // Called when the current episode finishes — mark it listened, then advance
   // to the next queued item.
   function handleEnded() {
     setPlaying(false);
-    if (selectedId) void markListened(selectedId, true);
-    if (!queue || !selectedId) return;
-    const i = queue.indexOf(selectedId);
-    const next = i >= 0 ? queue[i + 1] : undefined;
-    if (next) {
-      autoplayRef.current = true;
-      setCurrentMs(0);
-      setSelectedId(next);
+    const endedId = selectedId;
+    // Marking listened clears the saved position server-side, so a replay starts
+    // from the top; mirror that locally.
+    if (endedId) {
+      lastSavedMsRef.current = 0;
+      setEpisodes((es) => es.map((e) => (e.id === endedId ? { ...e, positionMs: 0 } : e)));
+      setDetail((d) => (d && d.id === endedId ? { ...d, positionMs: 0 } : d));
+      void markListened(endedId, true);
     }
+    const next = nextInQueue(endedId);
+    if (next) playNow(next);
   }
 
   // Which tabs have content to show on the player.
@@ -389,27 +609,39 @@ export default function App() {
   // ================= HOME / EPISODES (with bottom nav) =================
   if (selectedId === null) {
     const sorted = [...episodes].sort((a, b) => b.createdAt - a.createdAt);
-    const generating = episodes.filter((e) => e.status !== "ready" && e.status !== "failed").length;
+    // Still being built: anything the pipeline has not finished or failed.
+    const inFlight = sorted.filter((e) => e.status !== "ready" && e.status !== "failed");
     const unlistened = sorted.filter((e) => e.listenedAt === null);
-    const filtered =
-      filter === "unlistened"
-        ? unlistened
-        : filter === "listened"
-          ? sorted.filter((e) => e.listenedAt !== null)
-          : sorted;
-    // "Jump back in" surfaces what you still have to listen to; once everything
-    // is listened it falls back to the most recent episodes.
-    const jumpBackIn = (unlistened.length > 0 ? unlistened : sorted).slice(0, 3);
+    const inProgress = sorted.filter((e) => progressOf(e) === "progress");
+    const filtered = filter === "all" ? sorted : sorted.filter((e) => progressOf(e) === filter);
+    // Selection only applies on the Episodes screen; Home and Research reuse the
+    // same card renderer and stay tap-to-play.
+    const selecting = view === "episodes" && selectMode;
+    // "Up next" leads with what I am part way through, then what I have not
+    // started. Once everything is listened it falls back to the most recent.
+    const notStarted = sorted.filter((e) => progressOf(e) === "unlistened");
+    const readyUnstarted = notStarted.filter((e) => e.status === "ready");
 
     const card = (e: EpisodeListItem) => {
       const busyState = e.status !== "ready" && e.status !== "failed";
       const listened = e.listenedAt !== null;
+      const selected = selectedIds.includes(e.id);
+      const state = progressOf(e);
+      const percent =
+        e.durationMs && e.durationMs > 0 ? Math.min(100, (e.positionMs / e.durationMs) * 100) : 0;
       return (
-        <li key={e.id} className={`card-row${listened ? " is-listened" : ""}`}>
-          <button className="card" onClick={() => setSelectedId(e.id)}>
+        <li
+          key={e.id}
+          className={`card-row${listened ? " is-listened" : ""}${selected ? " is-selected" : ""}`}
+        >
+          <button
+            className="card"
+            onClick={() => (selecting ? toggleSelected(e.id) : setSelectedId(e.id))}
+            aria-pressed={selecting ? selected : undefined}
+          >
             <span className="card-art" style={coverStyle(e.id)} aria-hidden="true">
               <span className="card-glyph">{KIND_GLYPH[e.sourceKind] ?? "♫"}</span>
-              {e.status === "ready" && <span className="card-play">▶</span>}
+              {e.status === "ready" && <span className="card-play">{state === "progress" ? "↻" : "▶"}</span>}
             </span>
             <span className="card-body">
               <span className="card-title">{e.title || "Generating…"}</span>
@@ -426,18 +658,25 @@ export default function App() {
                 </span>
                 <span className="kind-tag">{e.sourceKind}</span>
                 {listened && <span className="chip listened">✓ Listened</span>}
+                {state === "progress" && (
+                  <span className="chip resume">
+                    {e.durationMs ? `${mmss(e.durationMs - e.positionMs)} left` : `at ${mmss(e.positionMs)}`}
+                  </span>
+                )}
               </span>
+              {state === "progress" && (
+                <span className="card-progress" aria-hidden="true">
+                  <span style={{ width: `${percent}%` }} />
+                </span>
+              )}
+              {busyState && e.note && <span className="card-note">{e.note}</span>}
             </span>
           </button>
-          <button
-            className={`listen-toggle${listened ? " on" : ""}`}
-            onClick={() => void markListened(e.id, !listened)}
-            aria-pressed={listened}
-            title={listened ? "Mark as unlistened" : "Mark as listened"}
-            aria-label={listened ? "Mark as unlistened" : "Mark as listened"}
-          >
-            ✓
-          </button>
+          {selecting && (
+            <span className={`card-select${selected ? " on" : ""}`} aria-hidden="true">
+              ✓
+            </span>
+          )}
         </li>
       );
     };
@@ -446,59 +685,164 @@ export default function App() {
       <div className="shell">
         {view === "home" && (
           <div className="page">
-            <div className="hero">
-              <span className="hero-eyebrow" aria-hidden="true">
-                ◉ Learn
+            <header className="home-top">
+              <span className="brand">
+                <span aria-hidden="true">◉</span> Sourced.fm
               </span>
-              <h1 className="hero-title">Turn anything into a podcast you can actually listen to.</h1>
-              <p className="hero-sub">
-                Drop in an article, an X post, or just a topic. Maya &amp; Sam host a tight two-voice
-                episode — fact-checked, with sources — and you can jump in to ask questions while it plays.
-              </p>
-              <div className="composer big">
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && submit()}
-                  placeholder="Paste a link or type a topic…"
-                />
-                <button className="btn-primary" onClick={submit} disabled={!input.trim()}>
-                  Create
+              <button className="ghost-btn" onClick={() => goCreate()}>
+                ＋ New
+              </button>
+            </header>
+
+            {episodes.length === 0 ? (
+              <div className="empty">
+                <div className="empty-glyph" aria-hidden="true">
+                  ♫
+                </div>
+                <p>Nothing here yet.</p>
+                <p className="muted">
+                  Add a link, or write a research brief, and it comes back as an episode with sources.
+                </p>
+                <button className="btn-primary empty-cta" onClick={() => goCreate()}>
+                  Make your first episode
                 </button>
               </div>
-              {generating > 0 && (
-                <p className="hero-status">
-                  <span className="spinner" aria-hidden="true" /> {generating} episode
-                  {generating > 1 ? "s" : ""} generating…
-                </p>
-              )}
-            </div>
-
-            {sorted.length > 0 && (
-              <section className="home-section">
-                <div className="section-head">
-                  <h2>{unlistened.length > 0 ? "Up next" : "Jump back in"}</h2>
-                  <button className="see-all" onClick={() => setView("episodes")}>
-                    All episodes →
+            ) : (
+              <>
+                {/* Counts double as shortcuts into the matching library filter. */}
+                <div className="stats">
+                  <button
+                    className="stat"
+                    onClick={() => {
+                      setFilter("progress");
+                      setView("episodes");
+                    }}
+                  >
+                    <span className="stat-n">{inProgress.length}</span>
+                    <span className="stat-l">in progress</span>
+                  </button>
+                  <button
+                    className="stat"
+                    onClick={() => {
+                      setFilter("unlistened");
+                      setView("episodes");
+                    }}
+                  >
+                    <span className="stat-n">{notStarted.length}</span>
+                    <span className="stat-l">to listen</span>
+                  </button>
+                  <button
+                    className="stat"
+                    onClick={() => {
+                      setFilter("all");
+                      setView("episodes");
+                    }}
+                  >
+                    <span className="stat-n">{episodes.length}</span>
+                    <span className="stat-l">episodes</span>
                   </button>
                 </div>
-                <ul className="cards">{jumpBackIn.map(card)}</ul>
-              </section>
+
+                {inFlight.length > 0 && (
+                  <section className="home-section">
+                    <div className="section-head">
+                      <h2>
+                        <span className="spinner" aria-hidden="true" /> In the works
+                      </h2>
+                      <span className="count">{inFlight.length}</span>
+                    </div>
+                    <ul className="cards">{inFlight.map(card)}</ul>
+                  </section>
+                )}
+
+                {inProgress.length > 0 && (
+                  <section className="home-section">
+                    <div className="section-head">
+                      <h2>Continue listening</h2>
+                      {inProgress.length > 3 && (
+                        <button
+                          className="see-all"
+                          onClick={() => {
+                            setFilter("progress");
+                            setView("episodes");
+                          }}
+                        >
+                          See all →
+                        </button>
+                      )}
+                    </div>
+                    <ul className="cards">{inProgress.slice(0, 3).map(card)}</ul>
+                  </section>
+                )}
+
+                {readyUnstarted.length > 0 && (
+                  <section className="home-section">
+                    <div className="section-head">
+                      <h2>Up next</h2>
+                      <button
+                        className="see-all"
+                        onClick={() => {
+                          setFilter("unlistened");
+                          setView("episodes");
+                        }}
+                      >
+                        All episodes →
+                      </button>
+                    </div>
+                    <ul className="cards">{readyUnstarted.slice(0, 4).map(card)}</ul>
+                  </section>
+                )}
+
+                {/* Caught up: nothing playing, nothing queued, nothing rendering. */}
+                {inFlight.length === 0 && inProgress.length === 0 && readyUnstarted.length === 0 && (
+                  <section className="home-section">
+                    <div className="section-head">
+                      <h2>Listened</h2>
+                      <button
+                        className="see-all"
+                        onClick={() => {
+                          setFilter("all");
+                          setView("episodes");
+                        }}
+                      >
+                        All episodes →
+                      </button>
+                    </div>
+                    <p className="muted caught-up">
+                      You are caught up. Add something new, or replay one of these.
+                    </p>
+                    <ul className="cards">{sorted.slice(0, 3).map(card)}</ul>
+                  </section>
+                )}
+              </>
             )}
           </div>
         )}
         {view === "episodes" && (
-          <div className="page">
+          <div className={`page${selecting ? " selecting" : ""}`}>
             <div className="page-head">
               <h1>Episodes</h1>
               <span className="count">{episodes.length}</span>
-              {unlistened.length > 0 && (
+              {unlistened.length > 0 && !selecting && (
                 <span className="count unlistened">{unlistened.length} to listen</span>
               )}
+              {episodes.length > 0 && (
+                <button
+                  className="select-btn"
+                  onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+                >
+                  {selectMode ? "Cancel" : "Select"}
+                </button>
+              )}
             </div>
+            {selecting && (
+              <p className="muted select-hint">
+                Tap episodes to add them. The order you tap is the order they play.
+              </p>
+            )}
             {episodes.length > 0 && (
               <div className="filters" role="tablist">
-                {(["all", "unlistened", "listened"] as const).map((f) => (
+                {(["all", "unlistened", "progress", "listened"] as const).map((f) => (
                   <button
                     key={f}
                     role="tab"
@@ -506,7 +850,13 @@ export default function App() {
                     className={`filter ${filter === f ? "on" : ""}`}
                     onClick={() => setFilter(f)}
                   >
-                    {f === "all" ? "All" : f === "unlistened" ? "Unlistened" : "Listened"}
+                    {f === "all"
+                      ? "All"
+                      : f === "unlistened"
+                        ? "Unlistened"
+                        : f === "progress"
+                          ? `In progress${inProgress.length ? ` (${inProgress.length})` : ""}`
+                          : "Listened"}
                   </button>
                 ))}
               </div>
@@ -522,17 +872,124 @@ export default function App() {
             ) : filtered.length === 0 ? (
               <div className="empty">
                 <div className="empty-glyph" aria-hidden="true">
-                  ✓
+                  {filter === "progress" ? "↻" : "✓"}
                 </div>
-                <p>{filter === "unlistened" ? "All caught up." : "Nothing listened to yet."}</p>
+                <p>
+                  {filter === "unlistened"
+                    ? "All caught up."
+                    : filter === "progress"
+                      ? "Nothing part way through."
+                      : "Nothing listened to yet."}
+                </p>
                 <p className="muted">
                   {filter === "unlistened"
                     ? "Every episode is marked listened."
-                    : "Episodes you finish — or mark with ✓ — show up here."}
+                    : filter === "progress"
+                      ? "Stop an episode part way and it waits for you here."
+                      : "Episodes you finish — or mark with ✓ — show up here."}
                 </p>
               </div>
             ) : (
               <ul className="cards">{filtered.map(card)}</ul>
+            )}
+          </div>
+        )}
+        {view === "create" && (
+          <div className="page">
+            <div className="page-head">
+              <h1>New episode</h1>
+            </div>
+
+            {/* Both ways in, side by side — one is a link, the other is an assignment. */}
+            <div className="modes" role="tablist">
+              <button
+                role="tab"
+                aria-selected={mode === "link"}
+                className={`mode ${mode === "link" ? "on" : ""}`}
+                onClick={() => setMode("link")}
+              >
+                <span className="mode-name">Link or topic</span>
+                <span className="mode-sub">One pass · minutes</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={mode === "deep"}
+                className={`mode ${mode === "deep" ? "on" : ""}`}
+                onClick={() => setMode("deep")}
+              >
+                <span className="mode-name">Deep research</span>
+                <span className="mode-sub">Planned · much longer</span>
+              </button>
+            </div>
+
+            {mode === "link" ? (
+              <>
+                <p className="muted mode-hint">
+                  An article link, an X post, or a short topic. It sources that one thing and turns it
+                  into an episode.
+                </p>
+                <div className="composer">
+                  <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submit()}
+                    placeholder="Paste a link or type a topic…"
+                  />
+                  <button className="btn-primary" onClick={submit} disabled={busy || !input.trim()}>
+                    Add
+                  </button>
+                </div>
+                {linkSent && <p className="brief-sent">Queued “{linkSent}”. It shows up below as it builds.</p>}
+              </>
+            ) : (
+              <>
+                <p className="muted mode-hint">
+                  Say what to research and how deep to go — what to focus on, what to skip, who to
+                  include. Paste links to build the research around them. It plans the questions,
+                  researches each one, then writes the episode from what it finds. Several minutes of
+                  work, so submit it and walk away.
+                </p>
+                <textarea
+                  className="brief"
+                  value={brief}
+                  onChange={(e) => setBrief(e.target.value)}
+                  rows={8}
+                  maxLength={4000}
+                  placeholder={
+                    "e.g. Research how solid-state batteries actually work and whether the 2027 production claims hold up.\n\n" +
+                    "Focus on the manufacturing problems, not the chemistry basics. Include the sceptics.\n\n" +
+                    "Start from https://example.com/solid-state-explainer"
+                  }
+                />
+                <div className="brief-bar">
+                  <span className="muted brief-count">{brief.trim().length} / 4000</span>
+                  <button
+                    className="btn-primary"
+                    onClick={submitResearch}
+                    disabled={busy || !brief.trim()}
+                  >
+                    {busy ? "Sending…" : "Start deep research"}
+                  </button>
+                </div>
+                {researchSent && (
+                  <p className="brief-sent">
+                    Researching now. Progress shows below, then it becomes an episode when the
+                    research is done.
+                  </p>
+                )}
+              </>
+            )}
+
+            {inFlight.length > 0 && (
+              <section className="home-section">
+                <div className="section-head">
+                  <h2>
+                    <span className="spinner" aria-hidden="true" /> In the works
+                  </h2>
+                  <span className="count">{inFlight.length}</span>
+                </div>
+                <ul className="cards">{inFlight.map(card)}</ul>
+              </section>
             )}
           </div>
         )}
@@ -659,6 +1116,9 @@ export default function App() {
                                 : e.status}{" "}
                               · {e.sourceKind}
                               {e.listenedAt !== null ? " · ✓ listened" : ""}
+                              {progressOf(e) === "progress" && e.durationMs
+                                ? ` · ${mmss(e.durationMs - e.positionMs)} left`
+                                : ""}
                             </span>
                           </button>
                           <span className="pl-ctrls">
@@ -725,6 +1185,36 @@ export default function App() {
           </div>
         )}
 
+        {selecting && (
+          <div className="selbar">
+            <div className="selbar-top">
+              <span className="selbar-count">
+                {selectedIds.length} selected
+              </span>
+              {selectedIds.length > 0 && (
+                <button className="link" onClick={() => setSelectedIds([])}>
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="selbar-row">
+              <input
+                value={selectionName}
+                onChange={(e) => setSelectionName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && createPlaylistFromSelection()}
+                placeholder="Playlist name…"
+              />
+              <button
+                className="btn-primary"
+                onClick={createPlaylistFromSelection}
+                disabled={selectedIds.length === 0}
+              >
+                Create playlist
+              </button>
+            </div>
+          </div>
+        )}
+
         <nav className="tabbar">
           <button
             className={`tab-item ${view === "home" ? "on" : ""}`}
@@ -745,6 +1235,16 @@ export default function App() {
               ♫
             </span>
             Episodes
+          </button>
+          <button
+            className={`tab-item ${view === "create" ? "on" : ""}`}
+            onClick={() => goCreate(mode)}
+            aria-current={view === "create"}
+          >
+            <span className="ti-glyph" aria-hidden="true">
+              ＋
+            </span>
+            Create
           </button>
           <button
             className={`tab-item ${view === "playlists" ? "on" : ""}`}
@@ -813,17 +1313,24 @@ export default function App() {
                   )}
                 </span>
               )}
+              {detail.status !== "ready" && detail.status !== "failed" && detail.note && (
+                <p className="now-note">{detail.note}</p>
+              )}
             </div>
 
             {ready && (
               <div className="controls">
                 <audio
                   ref={audioRef}
-                  src={api.audioUrl(detail.id)}
                   preload="metadata"
+                  onLoadedMetadata={handleLoadedMetadata}
                   onTimeUpdate={(e) => setCurrentMs(e.currentTarget.currentTime * 1000)}
                   onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
+                  onPause={(e) => {
+                    setPlaying(false);
+                    // 'pause' also fires at the end; handleEnded owns that case.
+                    if (!e.currentTarget.ended) savePosition(detail.id, e.currentTarget.currentTime * 1000);
+                  }}
                   onEnded={handleEnded}
                 />
                 <input

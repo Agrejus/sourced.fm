@@ -38,9 +38,15 @@ test("createDb adds listened_at to a database created before the column existed"
     .all()
     .map((r) => r.name);
   expect(columns).toContain("listened_at");
+  expect(columns).toContain("position_ms");
   // The existing row is preserved and defaults to unlistened.
-  const row = db.query<{ listened_at: number | null }, []>("SELECT listened_at FROM episodes WHERE id='e1'").get()!;
+  const row = db
+    .query<{ listened_at: number | null; position_ms: number }, []>(
+      "SELECT listened_at, position_ms FROM episodes WHERE id='e1'",
+    )
+    .get()!;
   expect(row.listened_at).toBeNull();
+  expect(row.position_ms).toBe(0);
   db.close();
   unlinkSync(path);
 });

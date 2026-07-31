@@ -1,4 +1,6 @@
-# podcast-learning
+# Sourced.fm
+
+_Repo and deploy paths are still `podcast-learning`; only the product name changed._
 
 Turn an article URL, an X/Twitter link, or a bare topic into a fact-checked,
 interactive two-host podcast you can listen to — and interrupt with spoken

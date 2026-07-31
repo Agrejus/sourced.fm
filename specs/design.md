@@ -78,7 +78,7 @@ in-process. SQLite holds episodes/chats/queue state; audio mp3s live on disk.
 Alongside it, the same compose file runs **self-hosted Firecrawl** (its API +
 worker + Redis + Playwright containers) and a **`speech` container** (Python,
 GPU) that owns all audio models — none of these are reachable outside the
-compose network. Everything runs on the Fedora box (`192.168.68.85`, rootless
+compose network. Everything runs on one Linux box (rootless
 podman, RTX 2080 Ti) and the app is fronted by `tailscale serve` for HTTPS. No
 message broker or second database *for our app* — at personal volume a worker
 loop over a SQLite table is the whole queue (Firecrawl's internal Redis is its
@@ -98,7 +98,7 @@ Dependencies (server-side; keys via `.env` on the box):
 
 - **Mic requires HTTPS.** `getUserMedia` only works in a secure context, so the
   PWA must be reached via `tailscale serve` (real cert on the tailnet). Plain
-  `http://192.168.68.85` will never get mic access.
+  a plain `http://` LAN address will never get mic access.
 - **Wake word only works with the app foregrounded and screen on.** iOS
   suspends PWA JS (and the mic) when the screen locks. Lock screen = playback
   controls only; questions need the phone awake. Platform limit, not a choice.
@@ -257,7 +257,7 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   asks/reacts/summarizes and EXPERT explains a level deeper than the source
   states it (mechanisms, examples, tradeoffs, a counterargument) — all still
   grounded strictly in the dossier. Opening: a short branded intro — HOST
-  welcomes listeners to "Learn," the two hosts introduce themselves by name
+  welcomes listeners to "Sourced," the two hosts introduce themselves by name
   (from the personas), and HOST tees up the topic — then into the substance.
   Last segment: HOST recaps the 3–5 most important takeaways and signs off.
 - **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the

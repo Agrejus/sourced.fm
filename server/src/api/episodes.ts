@@ -3,6 +3,11 @@ import type { Accessors, EpisodeRow } from "../db";
 import type { Dossier, SourceInput } from "../fetchers/types";
 import type { Factcheck, Script } from "../domain";
 import { classifyInput, ClassifyError } from "../fetchers/classify";
+import { extractSeedUrls } from "../fetchers/deepresearch";
+
+// A research assignment is prose, not a one-line topic, so it gets a much
+// larger ceiling than classifyInput's 500 characters.
+const MAX_BRIEF_CHARS = 4000;
 
 // Public projection of an episode. dossier.markdown is NEVER exposed — it is
 // server-side grounding material only; clients get dossier.sources.
@@ -22,6 +27,8 @@ function toDetail(ep: EpisodeRow) {
     factcheck: factcheck ? { claims: factcheck.claims } : null,
     durationMs: ep.duration_ms,
     listenedAt: ep.listened_at,
+    positionMs: ep.position_ms,
+    note: ep.stage_note,
     error: ep.error_json ? JSON.parse(ep.error_json) : null,
     createdAt: ep.created_at,
   };
@@ -35,6 +42,8 @@ function toListItem(ep: EpisodeRow) {
     sourceKind: (JSON.parse(ep.source_json) as SourceInput).kind,
     durationMs: ep.duration_ms,
     listenedAt: ep.listened_at,
+    positionMs: ep.position_ms,
+    note: ep.stage_note,
     createdAt: ep.created_at,
   };
 }
@@ -68,6 +77,20 @@ export function createEpisodesApi(deps: EpisodesDeps) {
     return c.json({ id: ep.id, status: ep.status, source }, 201);
   }
 
+  // Deep research: a written assignment instead of a link or a one-line topic.
+  // Links inside the assignment become seed sources for the research.
+  async function createResearch(c: Context): Promise<Response> {
+    const body = (await c.req.json().catch(() => ({}))) as { brief?: unknown };
+    const brief = typeof body.brief === "string" ? body.brief.trim() : "";
+    if (!brief) return c.json({ error: "brief required" }, 400);
+    if (brief.length > MAX_BRIEF_CHARS) {
+      return c.json({ error: `brief too long (>${MAX_BRIEF_CHARS} chars)` }, 400);
+    }
+    const source: SourceInput = { kind: "research", brief, seedUrls: extractSeedUrls(brief) };
+    const ep = deps.accessors.insertEpisode(source, deps.now());
+    return c.json({ id: ep.id, status: ep.status, source }, 201);
+  }
+
   function list(c: Context): Response {
     return c.json(deps.accessors.listEpisodes().map(toListItem));
   }
@@ -91,6 +114,21 @@ export function createEpisodesApi(deps: EpisodesDeps) {
       return c.json({ error: "not found" }, 404);
     }
     return c.json({ id, listenedAt });
+  }
+
+  // Playback position. The player reports this every 10 seconds while it plays,
+  // and again when it pauses, when the page hides, and when it unloads — so a
+  // crash costs at most 10 seconds of progress.
+  async function setPosition(c: Context): Promise<Response> {
+    const id = c.req.param("id")!;
+    const body = (await c.req.json().catch(() => ({}))) as { positionMs?: unknown };
+    if (typeof body.positionMs !== "number" || !Number.isFinite(body.positionMs)) {
+      return c.json({ error: "positionMs must be a finite number" }, 400);
+    }
+    if (!deps.accessors.setEpisodePosition(id, body.positionMs, deps.now())) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return c.json({ id, positionMs: deps.accessors.getEpisode(id)!.position_ms });
   }
 
   function chats(c: Context): Response {
@@ -155,5 +193,5 @@ export function createEpisodesApi(deps: EpisodesDeps) {
     });
   }
 
-  return { create, list, get, setListened, chats, audio };
+  return { create, createResearch, list, get, setListened, setPosition, chats, audio };
 }

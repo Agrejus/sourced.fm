@@ -129,3 +129,62 @@ test("listened state survives the pipeline advancing the episode", () => {
   a.updateEpisodeStage(ep.id, "submitted", "sourced", { title: "T" }, 6000);
   expect(a.getEpisode(ep.id)!.listened_at).toBe(5000);
 });
+
+test("setEpisodePosition stores, clamps to duration, and floors at zero", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  expect(a.getEpisode(ep.id)!.position_ms).toBe(0);
+
+  expect(a.setEpisodePosition(ep.id, 42_500, 2000)).toBe(true);
+  expect(a.getEpisode(ep.id)!.position_ms).toBe(42_500);
+
+  a.setEpisodePosition(ep.id, -5, 2000);
+  expect(a.getEpisode(ep.id)!.position_ms).toBe(0);
+
+  // With a known duration, an overshoot clamps to the end of the audio.
+  a.updateEpisodeStage(ep.id, "submitted", "sourced", {}, 1);
+  a.updateEpisodeStage(ep.id, "sourced", "scripted", {}, 1);
+  a.updateEpisodeStage(ep.id, "scripted", "verified", {}, 1);
+  a.updateEpisodeStage(ep.id, "verified", "synthesizing", {}, 1);
+  a.updateEpisodeStage(ep.id, "synthesizing", "ready", { duration_ms: 60_000 }, 1);
+  a.setEpisodePosition(ep.id, 99_999, 3000);
+  expect(a.getEpisode(ep.id)!.position_ms).toBe(60_000);
+
+  expect(a.setEpisodePosition("no-such-id", 1000, 3000)).toBe(false);
+});
+
+test("marking listened clears the saved position; unmarking leaves it cleared", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  a.setEpisodePosition(ep.id, 30_000, 2000);
+
+  a.setEpisodeListened(ep.id, 5000, 5000);
+  const listened = a.getEpisode(ep.id)!;
+  expect(listened.listened_at).toBe(5000);
+  expect(listened.position_ms).toBe(0);
+
+  a.setEpisodeListened(ep.id, null, 6000);
+  const cleared = a.getEpisode(ep.id)!;
+  expect(cleared.listened_at).toBeNull();
+  expect(cleared.position_ms).toBe(0);
+});
+
+test("position survives the pipeline advancing the episode", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  a.setEpisodePosition(ep.id, 20_000, 2000);
+  a.updateEpisodeStage(ep.id, "submitted", "sourced", { title: "T" }, 3000);
+  expect(a.getEpisode(ep.id)!.position_ms).toBe(20_000);
+});
+
+test("setEpisodeNote records stage progress and clears it", () => {
+  const a = fresh();
+  const ep = a.insertEpisode(ARTICLE, 1000);
+  expect(a.getEpisode(ep.id)!.stage_note).toBeNull();
+
+  a.setEpisodeNote(ep.id, "researching 2 of 5: how it works", 2000);
+  expect(a.getEpisode(ep.id)!.stage_note).toBe("researching 2 of 5: how it works");
+
+  a.setEpisodeNote(ep.id, null, 3000);
+  expect(a.getEpisode(ep.id)!.stage_note).toBeNull();
+});
