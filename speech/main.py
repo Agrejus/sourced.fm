@@ -6,6 +6,8 @@ Frozen contract:
   POST /tts/answer     JSON {"text": "..."}    -> streamed audio/wav
   POST /tts/episode    JSON {episodeId, segments:[{idx,speaker,text}]}
                        -> {audioFile, durationMs, segmentStartMs}
+  POST /youtube        JSON {"url": "..."}
+                       -> {title, author, durationSec, description, source, transcript}
 Any failure -> 500 {"error": "<message>"}; the caller retries via the pipeline.
 """
 
@@ -20,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import models
+import youtube
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 
@@ -47,6 +50,10 @@ class AnswerRequest(BaseModel):
     text: str
 
 
+class YoutubeRequest(BaseModel):
+    url: str
+
+
 @app.get("/healthz")
 def healthz():
     try:
@@ -63,6 +70,22 @@ async def stt(audio: UploadFile = File(...)):
         text = await asyncio.to_thread(models.transcribe, raw, suffix)
         return {"text": text}
     except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@app.post("/youtube")
+async def youtube_transcript(body: YoutubeRequest):
+    """Captions when the video has them, else GPU transcription of the audio.
+
+    Held behind the episode lock: the whisper fallback competes with a render
+    for the GPU, and yt-dlp downloads should not pile up either.
+    """
+    try:
+        async with _episode_lock:
+            return await asyncio.to_thread(youtube.transcript, body.url)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 — the caller retries via the pipeline
         return JSONResponse(status_code=500, content={"error": str(exc)})
 
 

@@ -43,7 +43,7 @@ function coverStyle(seed: string) {
   const b = (a + 40) % 360;
   return { backgroundImage: `linear-gradient(140deg, hsl(${a} 74% 56%), hsl(${b} 70% 42%))` };
 }
-const KIND_GLYPH: Record<string, string> = { article: "¶", tweet: "𝕏", topic: "✦", research: "⌕" };
+const KIND_GLYPH: Record<string, string> = { article: "¶", tweet: "𝕏", youtube: "▶", topic: "✦", research: "⌕" };
 
 const SpeechRecognitionImpl =
   (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
@@ -1085,15 +1085,16 @@ export default function App() {
             {mode === "link" ? (
               <>
                 <p className="muted mode-hint">
-                  An article link, an X post, or a short topic. It sources that one thing and turns it
-                  into an episode.
+                  An article link, a YouTube video, an X post, or a short topic. It sources that one
+                  thing and turns it into an episode. A YouTube link is read from the video's
+                  transcript.
                 </p>
                 <div className="composer">
                   <input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && submit()}
-                    placeholder="Paste a link or type a topic…"
+                    placeholder="Paste a link, a YouTube video, or type a topic…"
                   />
                   <button className="btn-primary" onClick={submit} disabled={busy || !input.trim()}>
                     Add

@@ -4,6 +4,15 @@ import type { SourceInput } from "./types";
 // The submit route turns this into a 400.
 export class ClassifyError extends Error {}
 
+const YOUTUBE_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtu.be",
+  "www.youtu.be",
+]);
+
 const TWEET_HOSTS = new Set([
   "x.com",
   "twitter.com",
@@ -40,7 +49,10 @@ export function classifyInput(text: string): SourceInput {
       TWEET_HOSTS.has(host) ||
       host.endsWith(".x.com") ||
       host.endsWith(".twitter.com");
-    return isTweet ? { kind: "tweet", url: urlString } : { kind: "article", url: urlString };
+    if (isTweet) return { kind: "tweet", url: urlString };
+    // A YouTube link is read as a transcript, not scraped as an article.
+    if (YOUTUBE_HOSTS.has(host)) return { kind: "youtube", url: urlString };
+    return { kind: "article", url: urlString };
   }
 
   return { kind: "topic", topic: trimmed };

@@ -1,14 +1,15 @@
 # Sourced.fm
 
-Turn an article URL, an X/Twitter link, a bare topic, or a written research
-assignment into a fact-checked, interactive two-host podcast you can listen to
+Turn an article URL, a YouTube link, an X/Twitter link, a bare topic, or a
+written research assignment into a fact-checked, interactive two-host podcast you can listen to
 and interrupt with spoken questions. Every episode is built from a cited source
 dossier and passes a claim-by-claim verification stage before any audio is
 rendered.
 
 One Bun service runs the API, hosts the PWA, and runs the pipeline worker in
 process. State is a single SQLite file; audio is mp3 on disk. Article ingestion
-uses self-hosted Firecrawl. Speech runs locally on an NVIDIA GPU: VibeVoice for
+uses self-hosted Firecrawl; YouTube links are read from the video transcript
+(captions when they exist, otherwise the audio is transcribed on the GPU). Speech runs locally on an NVIDIA GPU: VibeVoice for
 episodes, Kokoro for spoken answers, faster-whisper for transcription and
 timestamp alignment. A hosted LLM (Ollama Cloud by default) writes the dialogue,
 runs the fact-check, researches topics, and answers questions, and its tokens
