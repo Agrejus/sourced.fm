@@ -1,4 +1,4 @@
-# podcast-learning deploy stack (rootless podman on the Fedora box).
+# Sourced.fm deploy stack (compose, rootless-friendly).
 #
 # Firecrawl services mirror firecrawl/firecrawl @ v2.11.0 docker-compose.yaml
 # (VERIFIED 2026-07-25), pulled as ghcr images pinned by digest. Our deltas vs
@@ -50,7 +50,7 @@ services:
     build:
       context: ../speech
     restart: unless-stopped
-    # GPU via CDI. SELinux (Silverblue, enforcing) denies /dev/nvidia* without
+    # GPU via CDI. Where SELinux is enforcing it denies /dev/nvidia* without
     # label:disable (device nodes are already 0666). See deploy/README.md.
     devices:
       - nvidia.com/gpu=all

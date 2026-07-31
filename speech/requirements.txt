@@ -1,4 +1,4 @@
-# CUDA wheels for Turing (2080 Ti). torch cu124 wheels bundle their own CUDA
+# CUDA wheels. torch cu124 wheels bundle their own CUDA
 # + cuDNN, so the runtime base image's CUDA version only needs to satisfy the
 # driver (580.x supports CUDA 13, so cu124 runs fine).
 --extra-index-url https://download.pytorch.org/whl/cu124

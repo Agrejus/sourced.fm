@@ -1,4 +1,4 @@
-# Implementation plan — podcast-learning
+# Implementation plan — Sourced.fm
 
 This document is the **build order and exact contracts** for `specs/design.md`.
 Read design.md first for intent; this file wins on any detail-level conflict.
@@ -124,7 +124,7 @@ warns later versions may break). Verified contract the wrapper is built on:
   `VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, torch_dtype=torch.float16, device_map="cuda", attn_implementation="sdpa")`
   then `model.eval()` and `model.set_ddpm_inference_steps(num_steps=10)`. The
   fork's CUDA path defaults to `bfloat16` + `flash_attention_2`; both are
-  wrong for a 2080 Ti (Turing has no bf16; FA2 has no Turing kernels), so we
+  wrong for pre-Ampere GPUs (no bf16; FA2 has no Turing kernels), so we
   pass `float16` + `sdpa` explicitly. `model_path` is `microsoft/VibeVoice-1.5B`.
 - **Script input:** one text blob, per-line speaker labels
   `Speaker 1: ...` / `Speaker 2: ...` (1-indexed; the fork's parser is
@@ -174,7 +174,7 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
 - `speech/Dockerfile`: `FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04`, install
   python3.11, pip deps from `requirements.txt` (pin every version), ffmpeg.
   Model weights go to a named volume via `HF_HOME=/models` (declare volume).
-- One-time on the box (document in `deploy/README.md`):
+- One-time on the host (document in `deploy/README.md`):
   `nvidia-container-toolkit` must be installed and a CDI spec generated. The
   canonical (root) path is
   `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`. **A host driver
@@ -186,18 +186,18 @@ trigger, monotonicity. These run on CPU with synthetic word lists (no GPU).
   `nvidia-ctk cdi generate --output=$HOME/.config/cdi/nvidia.yaml`, plus
   `~/.config/containers/containers.conf` with
   `[engine]\ncdi_spec_dirs = ["$HOME/.config/cdi"]`.
-- **SELinux (Silverblue, enforcing):** rootless GPU containers are denied
+- **SELinux (where enforcing):** rootless GPU containers are denied
   access to `/dev/nvidia*` unless the container runs with
   `--security-opt=label=disable` (podman) / `security_opt: ["label=disable"]`
   (compose). The device nodes are already `0666`, so this is purely the
   SELinux label. The `speech` service in `deploy/compose.yml` MUST set it.
-- **VERIFY on the box before writing any more code (DONE 2026-07-25):**
+- **VERIFY on the host before writing any more code (DONE 2026-07-25):**
   `podman run --rm --security-opt=label=disable --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
-  prints `NVIDIA GeForce RTX 2080 Ti` (driver 580.159.04, CUDA 13.0,
-  166MiB/11264MiB). If this fails, fix CDI before proceeding.
+  prints the GPU name and its memory (about 11GB is expected, nearly all
+  free). If this fails, fix CDI before proceeding.
 
-**DONE-gate (run on the box):**
-1. `curl speech:7910/healthz` → `{"ok":true,"gpu":"NVIDIA GeForce RTX 2080 Ti"}`
+**DONE-gate (run on the host):**
+1. `curl speech:7910/healthz` → `{"ok":true,"gpu":"<device name>"}`
 2. `python speech/smoke_episode.py` — a checked-in script that POSTs a 6-segment
    two-speaker script to `/tts/episode`, asserts the mp3 exists, durationMs > 0,
    segmentStartMs is monotonic. **Listen to the mp3** (send it to the user for
@@ -570,7 +570,7 @@ non-`/api` path (SPA fallback to `index.html`).
   SpeechRecognition is absent, hide the toggle — hold-to-talk still works.
   Persistent "listening" indicator whenever recognition is armed.
 - **Mic requires HTTPS**: if `!window.isSecureContext`, hide mic UI and show
-  "voice needs the Tailscale HTTPS address" hint. Do not try anyway.
+  "voice needs an HTTPS connection" hint. Do not try anyway.
 - **Submit box**: one text input, placeholder "Article URL, X link, or a
   topic…" → POST → optimistic list entry that polls `GET /api/episodes/:id`
   every 5s until `ready`/`failed`.
@@ -602,24 +602,23 @@ Range curl check passes. Real-iPhone voice testing lands in M6.
   copied in), `ports: ["7900:7900"]`, mounts `./data:/data`.
 - `speech`: `devices: ["nvidia.com/gpu=all"]`, mounts `./data:/data` +
   models volume. No ports.
-- Box flow (document in `deploy/README.md`): push over SSH
-  (`git config receive.denyCurrentBranch updateInstead` on the box, clone at
-  `~/Repos/podcast-learning`), then `podman compose up -d --build`.
-- Tailscale: `sudo tailscale up`, then `sudo tailscale serve --bg 7900`.
+- Host flow (see `deploy/README.md`): get the tree onto the host, build
+  `app/dist`, then `podman compose up -d --build`.
+- HTTPS: put a reverse proxy or tunnel in front of port 7900.
 
-**DONE-gate (on the box):** end-to-end for ALL THREE input kinds — a real
+**DONE-gate (on the host):** end-to-end for ALL THREE input kinds — a real
 article URL, a real X thread link, and a topic (e.g. "what changed in
 Postgres 18") — each via `curl -X POST .../api/episodes -d '{"input":"..."}'`
 → poll until `ready` → download audio.mp3, listen; for the topic episode
 confirm `dossier.sources` ≥ 2 and `factcheck.claims` is populated. `curl http://<box>:3002` from another
-LAN machine must FAIL (firecrawl not exposed). `https://<tailnet-name>/`
+LAN machine must FAIL (firecrawl not exposed). `https://<your-host>/`
 loads the PWA with a valid cert.
 
 ---
 
 ## M6 — iPhone verification pass (no new code, fix what fails)
 
-On the actual iPhone over Tailscale HTTPS: install to home screen; lock-screen
+On a real phone over HTTPS: install to home screen; lock-screen
 controls work; scrubbing works; hold-to-talk round trip < ~6s to first answer
 audio; wake word "question" triggers with headphones on; wake word survives
 > 60s of playback (the auto-restart); backgrounding disarms cleanly. File and
@@ -774,7 +773,7 @@ provider is ever built (design.md §2.6).
 - [ ] VibeVoice left resident after an episode → interactive VRAM gone (§1.2).
 - [ ] Per-segment VibeVoice calls → voices drift; one pass only (design §2.11).
 - [ ] Missing Range support → iOS scrubbing broken (M4 curl check).
-- [ ] Mic on plain http → getUserMedia rejects; HTTPS via tailscale serve only.
+- [ ] Mic on plain http → getUserMedia rejects; HTTPS only.
 - [ ] Wake-word recognition left armed during the answer → it hears itself.
 - [ ] Trusting the model's structured reply blindly → always `JSON.parse` +
       zod-validate the content (`chatJSON` does this; a mismatch → retry).

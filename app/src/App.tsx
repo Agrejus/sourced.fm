@@ -1404,7 +1404,7 @@ export default function App() {
                     )}
                   </div>
                 ) : (
-                  <p className="muted voice-note">Voice needs the Tailscale HTTPS address.</p>
+                  <p className="muted voice-note">Voice needs an HTTPS connection.</p>
                 )}
               </div>
             )}

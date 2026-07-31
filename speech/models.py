@@ -3,9 +3,10 @@
 Residency policy: faster-whisper (STT + forced alignment) and Kokoro (answer
 TTS) load once and stay resident. VibeVoice (episode TTS, ~7GB) loads inside
 the episode call and is released in a finally block so it never evicts the
-resident interactive set from the 2080 Ti's 11GB.
+resident interactive set inside an 11GB VRAM budget.
 
-Turing (2080 Ti) overrides applied at load: torch_dtype=float16 (no bf16) and
+Overrides applied at load for GPUs without bf16 (Turing and older):
+torch_dtype=float16 and
 attn_implementation="sdpa" (FlashAttention 2 has no Turing kernels). The fork's
 CUDA default is bfloat16 + flash_attention_2, so we pass these explicitly.
 

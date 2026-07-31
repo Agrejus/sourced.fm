@@ -1,17 +1,16 @@
-# podcast-learning — article → interactive podcast
+# Sourced.fm — article → interactive podcast
 
-Standalone system. It shares **nothing** with rust-runtime — no bus, no Mongo,
-no browserless container. rust-runtime was reference material only (its scrape
-SDK showed the render-via-headless-browser approach; here we use Firecrawl
-instead).
+Standalone system: no message bus, no second database, no browserless
+container. Article rendering goes through Firecrawl rather than a
+headless-browser SDK.
 
 ## Part 1: What this is (for humans)
 
 Give the system **an article URL, an X/Twitter link, or just a topic**. It
 builds a cited source dossier, rewrites it as a two-host dialogue,
 **fact-checks the script against the sources before any audio exists**,
-synthesizes it locally on the box's RTX 2080 Ti (VibeVoice), and publishes it
-as an episode you can play on your iPhone from anywhere (Tailscale). While
+synthesizes it locally on an NVIDIA GPU (VibeVoice), and publishes it
+as an episode you can play on your phone from anywhere. While
 you listen, you can interrupt — hold the mic button **or say the word
 "question"** — ask a question out loud, hear the answer spoken back, and
 resume playback. Audio in both directions is local and free; the only metered
@@ -79,16 +78,16 @@ Alongside it, the same compose file runs **self-hosted Firecrawl** (its API +
 worker + Redis + Playwright containers) and a **`speech` container** (Python,
 GPU) that owns all audio models — none of these are reachable outside the
 compose network. Everything runs on one Linux box (rootless
-podman, RTX 2080 Ti) and the app is fronted by `tailscale serve` for HTTPS. No
+container runtime, one NVIDIA GPU) and the app is fronted by HTTPS. No
 message broker or second database *for our app* — at personal volume a worker
 loop over a SQLite table is the whole queue (Firecrawl's internal Redis is its
 own business).
 
-Dependencies (server-side; keys via `.env` on the box):
+Dependencies (server-side; keys via `.env` on the host):
 
 | Dependency | Used for | Notes |
 |---|---|---|
-| Firecrawl (self-hosted) | URL → clean markdown + metadata | AGPL, free; 4 containers on the box; no cloud key. Cloud-only anti-bot ("fire-engine") is absent — hard-bot-walled sites may fail (see §2.3) |
+| Firecrawl (self-hosted) | URL → clean markdown + metadata | AGPL, free; 4 containers on the host; no cloud key. Cloud-only anti-bot ("fire-engine") is absent — hard-bot-walled sites may fail (see §2.3) |
 | LLM provider (Ollama Cloud) | topic research (via Ollama web search/fetch), dialogue script, fact-check pass, Q&A answers | the only metered cost; `glm-5.2` by default (`OLLAMA_MODEL`; `gpt-oss:120b` also verified) |
 | Tweet-resolver API | X/Twitter link → tweet + thread JSON | X blocks scrapers; resolver choice pinned in implementation.md |
 | `speech` service (local GPU) | episode TTS (VibeVoice-1.5B), answer TTS (Kokoro-82M), STT + alignment (faster-whisper) | free; ~11GB VRAM budget, see §2.7 |
@@ -97,14 +96,14 @@ Dependencies (server-side; keys via `.env` on the box):
 ### Honest constraints (iPhone realities)
 
 - **Mic requires HTTPS.** `getUserMedia` only works in a secure context, so the
-  PWA must be reached via `tailscale serve` (real cert on the tailnet). Plain
+  PWA must be reached over HTTPS with a real certificate. Plain
   a plain `http://` LAN address will never get mic access.
 - **Wake word only works with the app foregrounded and screen on.** iOS
   suspends PWA JS (and the mic) when the screen locks. Lock screen = playback
   controls only; questions need the phone awake. Platform limit, not a choice.
 - **Use headphones for wake word.** On speaker the mic hears the podcast; echo
   cancellation helps, but a host saying "question" can false-trigger.
-- **Episodes render slower than cloud TTS.** VibeVoice-1.5B on a 2080 Ti takes
+- **Episodes render slower than cloud TTS.** VibeVoice-1.5B on a consumer GPU takes
   minutes, not seconds, per episode. Irrelevant for a batch pipeline; noted so
   nobody "fixes" it. The Turing card also means fp16 (no bf16) and SDPA (no
   FlashAttention 2) — both must be set explicitly, VibeVoice defaults to bf16.
@@ -264,7 +263,7 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   female voice) and `expert.md` (Sam, the male voice), read fresh each episode
   by `hosts.ts` and appended to the script system prompt so every episode keeps
   the same two-host personas and style. The personas dir is bind-mounted into
-  `learn` (read-only), so editing on the box retunes the show on the next
+  `learn` (read-only), so editing on the host retunes the show on the next
   episode with no rebuild. Keep genders aligned with `speech/voices/`.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
   > 400 segments → stage error (a runaway guard, not a target; backoff retry
@@ -322,7 +321,7 @@ FastAPI container owning every audio model; the Bun app is its only client.
 | `POST /tts/answer` (text → streamed audio) | Kokoro-82M (~1GB) | resident |
 | `POST /stt` (audio → text) | faster-whisper distil/small (~1–2GB) | resident |
 
-- The 2080 Ti has 11GB with everything else on the box using ~0 (verified
+- The VRAM budget assumes about 11GB with nothing else resident (verified
   2026-07-25: 166MiB, gnome-shell only). Resident interactive set is ~3GB;
   VibeVoice fits in the remainder only because it is load/unload — it must
   never be kept resident between episodes, or the interactive loop loses its
@@ -382,7 +381,7 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - **Episode page**: shows the sources list and the fact-check claim table —
   the audit trail behind "factually correct".
 
-### 2.10 Deploy (Fedora box, rootless podman)
+### 2.10 Deploy (compose, rootless-friendly)
 
 - App image: Bun base + ffmpeg; `data/` bind-mounted for SQLite + audio.
 - `deploy/compose.yml` services:
@@ -410,17 +409,17 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
   (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`); verify with
   `podman run --rm --device nvidia.com/gpu=all ... nvidia-smi`. Document in
   `deploy/README`.
-- Env (`.env` on the box, gitignored): `FIRECRAWL_API_URL`
+- Env (`.env` on the host, gitignored): `FIRECRAWL_API_URL`
   (`http://firecrawl-api:3002`), `FIRECRAWL_API_KEY` (self-set token),
   `OLLAMA_API_KEY` (+ optional `OLLAMA_HOST`, `OLLAMA_MODEL`), `SPEECH_URL`
   (`http://speech:7910`), `SPEECH_PROVIDER=local`, `PORT`. ElevenLabs vars (`ELEVENLABS_API_KEY`,
   `ELEVENLABS_VOICE_HOST/EXPERT`) exist only if the fallback provider is
   enabled.
-- Ship code like rust-runtime does: bare-push over SSH
-  (`git config receive.denyCurrentBranch=updateInstead` on the box), then
+- Ship code by whatever means suits the host, build `app/dist`, then
   `podman compose up -d --build`.
-- `tailscale serve --bg 7900` fronts the service with HTTPS on the tailnet —
-  this is what makes the mic work (§Part 1); it is not optional for voice.
+- HTTPS in front of the service is required — this is what makes the mic work
+  (§Part 1); it is not optional for voice. Any reverse proxy with a real
+  certificate works; `tailscale serve` is the least setup on a tailnet.
 
 ### 2.11 Negative space (what must NOT happen)
 
@@ -444,7 +443,7 @@ POST /api/episodes/:id/ask-text   {question, positionMs} → {answerText}
 - Nothing outside `fetchers/` knows which fetcher produced the article;
   nothing outside `server/src/speech/` knows which speech provider ran.
 - The Firecrawl and speech containers are never reachable from outside the
-  compose network (no published ports, not on the tailnet) — a headless
+  compose network (no published ports) — a headless
   browser that fetches arbitrary URLs and a GPU service are not things the LAN
   gets to talk to.
 - `audio.mp3` is immutable once status is `ready`.

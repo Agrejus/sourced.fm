@@ -9,7 +9,7 @@ all GPU memory to the driver unconditionally. In-process `del model` +
 keeps the weights alive — which would evict the resident interactive set's VRAM
 headroom (design.md §2.7 / §2.11).
 
-Turing (2080 Ti) overrides applied at load: torch_dtype=float16 (no bf16) and
+Overrides for GPUs without bf16 (Turing and older): torch_dtype=float16 and
 attn_implementation="sdpa" (no FlashAttention 2 kernels for Turing).
 """
 
