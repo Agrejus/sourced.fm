@@ -10,7 +10,7 @@ export type Status =
   | "ready"
   | "failed";
 
-export type SourceKind = "article" | "tweet" | "topic" | "research";
+export type SourceKind = "article" | "tweet" | "youtube" | "topic" | "research";
 
 export interface EpisodeListItem {
   id: string;

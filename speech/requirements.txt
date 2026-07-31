@@ -15,6 +15,10 @@ faster-whisper==1.1.1
 # Answer TTS (resident).
 kokoro==0.9.4
 
+# YouTube transcripts. Scraping the watch page no longer works: timedtext
+# returns an empty body without a proof-of-origin token, so this tracks it.
+yt-dlp==2026.7.4
+
 soundfile==0.13.1
 numpy==1.26.4
 

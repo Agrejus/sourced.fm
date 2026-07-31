@@ -4,6 +4,7 @@
 export type SourceInput =
   | { kind: "article"; url: string }
   | { kind: "tweet"; url: string }
+  | { kind: "youtube"; url: string }
   | { kind: "topic"; topic: string }
   // A written research assignment. `brief` is what the user typed, `seedUrls`
   // are the links inside it, which are read first and steer the plan.

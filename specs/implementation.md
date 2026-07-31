@@ -234,6 +234,7 @@ episode through the pipeline.
 export type SourceInput =
   | { kind: "article"; url: string }
   | { kind: "tweet"; url: string }
+  | { kind: "youtube"; url: string }
   | { kind: "research"; brief: string; seedUrls: string[] }
   | { kind: "topic"; topic: string };
 export type Dossier = { markdown: string; title: string; sources: { title: string; url: string }[] };
@@ -287,6 +288,20 @@ coding** and pin what you found in a comment + fixture
 lacks thread expansion, fetch each `replying_to`-chained same-author tweet by
 id (bounded: max 25). No API key. Resolver down ⇒ `{code:"http"}` (retry via
 pipeline backoff).
+
+**`youtube.ts` (youtube):** a YouTube link becomes an episode from its
+transcript. The watch page cannot be scraped for captions any more: timedtext
+answers 200 with an empty body without a proof-of-origin token, and the signed
+`baseUrl` in `ytInitialPlayerResponse` is therefore useless (VERIFIED
+2026-07-31 across every `fmt` and header combination). Extraction lives in the
+speech service instead, where yt-dlp tracks that plumbing and the GPU is at
+hand: `POST /youtube {url}` returns `{title, author, durationSec, description,
+source, transcript}`, taking captions when the video has them and transcribing
+the audio with faster-whisper when it does not. Videos over 90 minutes with no
+captions are refused rather than tying up the renderer. The fetcher turns that
+into a dossier whose header states how the words were obtained, so the script
+stage never quotes machine text as exact speech. A 422 from the service is an
+unusable video (`empty`); anything else is `http` and retries.
 
 **`webagent.ts` (shared):** the search-and-read loop both research paths use.
 `runWebAgent({system, user, maxRounds, sources})` runs the tool loop and returns

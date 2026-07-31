@@ -6,7 +6,8 @@ headless-browser SDK.
 
 ## Part 1: What this is (for humans)
 
-Give the system **an article URL, an X/Twitter link, or just a topic**. It
+Give the system **an article URL, a YouTube link, an X/Twitter link, or just a
+topic**. It
 builds a cited source dossier, rewrites it as a two-host dialogue,
 **fact-checks the script against the sources before any audio exists**,
 synthesizes it locally on an NVIDIA GPU (VibeVoice), and publishes it
