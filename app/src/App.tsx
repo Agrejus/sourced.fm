@@ -762,7 +762,10 @@ export default function App() {
     const from = dragFromRef.current;
     if (!from) return;
     // Expanded only travels down; collapsed only travels up.
-    const dy = expanded ? Math.max(0, e.clientY - from.y) : Math.min(0, e.clientY - from.y);
+    const raw = e.clientY - from.y;
+    // Expanded travels down to collapse. Collapsed travels up to expand, and a
+    // resisted pull down, which dismisses on release.
+    const dy = expanded ? Math.max(0, raw) : raw < 0 ? raw : Math.min(raw * 0.4, 90);
     if (Math.abs(dy) > 4) draggedRef.current = true;
     setDragPx(dy);
   }
@@ -775,6 +778,7 @@ export default function App() {
     const flick = Math.abs(dy) / Math.max(1, Date.now() - from.at) > 0.5; // px per ms
     if (expanded && dy > (flick ? 12 : SNAP_PX)) setExpanded(false);
     else if (!expanded && -dy > (flick ? 12 : SNAP_PX)) setExpanded(true);
+    else if (!expanded && dy > 90) dismissPlayer(); // swipe the mini player away
     setDragPx(0);
   }
 
@@ -1587,17 +1591,7 @@ export default function App() {
               aria-label="Forward 30 seconds"
               disabled={!ready}
             >
-              <span className="tp-num">30</span>↻
-            </button>
-            <button
-              className="mini-btn close"
-              onClick={(e) => {
-                e.stopPropagation();
-                dismissPlayer();
-              }}
-              aria-label="Close the player"
-            >
-              ✕
+              ↻
             </button>
           </div>
 
