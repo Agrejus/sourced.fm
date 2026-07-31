@@ -125,6 +125,14 @@ export default function App() {
 
   useEffect(() => savePlaylists(playlists), [playlists]);
 
+  // An expanded sheet owns the screen, so the library behind it must not scroll
+  // as well. Two live scrollers is the double scrollbar.
+  useEffect(() => {
+    const open = !!selectedId && expanded;
+    document.body.classList.toggle("sheet-open", open);
+    return () => document.body.classList.remove("sheet-open");
+  }, [selectedId, expanded]);
+
   // Leaving the Episodes screen abandons an in-progress selection.
   useEffect(() => {
     if (view === "episodes") return;
@@ -1488,6 +1496,12 @@ export default function App() {
       {library}
 
       {selectedId && (
+        <>
+        <div
+          className={`scrim${expanded ? " on" : ""}`}
+          onClick={() => setExpanded(false)}
+          aria-hidden="true"
+        />
         <div className="sheet-wrap">
         <div
           ref={sheetRef}
@@ -1853,6 +1867,7 @@ export default function App() {
           </div>
         </div>
         </div>
+        </>
       )}
     </>
   );

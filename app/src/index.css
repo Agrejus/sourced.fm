@@ -562,7 +562,10 @@ input {
   position: fixed;
   left: 0;
   right: 0;
-  top: 0;
+  /* Stops below the status bar with a gap, so it reads as a sheet over the
+     library rather than a second full screen. viewport-fit=cover means the web
+     view runs under the status bar in the installed app. */
+  top: calc(env(safe-area-inset-top) + 16px);
   bottom: calc(66px + env(safe-area-inset-bottom));
   z-index: 30;
   max-width: 640px;
@@ -689,6 +692,27 @@ input {
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   position: relative;
+  /* Reaching the end of the transcript must not start scrolling the library. */
+  overscroll-behavior: contain;
+}
+
+/* The page behind an expanded sheet holds still. */
+body.sheet-open {
+  overflow: hidden;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.34s var(--ease);
+}
+.scrim.on {
+  opacity: 1;
+  pointer-events: auto;
 }
 .sheet.down .sheet-body { overflow: hidden; }
 
