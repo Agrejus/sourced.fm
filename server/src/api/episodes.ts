@@ -4,6 +4,7 @@ import type { Dossier, SourceInput } from "../fetchers/types";
 import type { Factcheck, Script } from "../domain";
 import { classifyInput, ClassifyError } from "../fetchers/classify";
 import { extractSeedUrls } from "../fetchers/deepresearch";
+import { buildStageHistory, estimateProgress, type Progress, type StageHistory } from "../progress";
 
 // A research assignment is prose, not a one-line topic, so it gets a much
 // larger ceiling than classifyInput's 500 characters.
@@ -11,7 +12,7 @@ const MAX_BRIEF_CHARS = 4000;
 
 // Public projection of an episode. dossier.markdown is NEVER exposed — it is
 // server-side grounding material only; clients get dossier.sources.
-function toDetail(ep: EpisodeRow) {
+function toDetail(ep: EpisodeRow, progress: Progress | null = null) {
   const source = JSON.parse(ep.source_json) as SourceInput;
   const dossier = ep.dossier_json ? (JSON.parse(ep.dossier_json) as Dossier) : null;
   const script = ep.script_json ? (JSON.parse(ep.script_json) as Script) : null;
@@ -29,12 +30,14 @@ function toDetail(ep: EpisodeRow) {
     listenedAt: ep.listened_at,
     positionMs: ep.position_ms,
     note: ep.stage_note,
+    // Estimated, and null once the episode is ready or failed.
+    progress,
     error: ep.error_json ? JSON.parse(ep.error_json) : null,
     createdAt: ep.created_at,
   };
 }
 
-function toListItem(ep: EpisodeRow) {
+function toListItem(ep: EpisodeRow, progress: Progress | null = null) {
   return {
     id: ep.id,
     title: ep.title,
@@ -44,8 +47,24 @@ function toListItem(ep: EpisodeRow) {
     listenedAt: ep.listened_at,
     positionMs: ep.position_ms,
     note: ep.stage_note,
+    progress,
     createdAt: ep.created_at,
   };
+}
+
+// Progress needs this episode's own timings plus the cross-episode history. The
+// history is read once per request so listing N episodes stays a fixed number of
+// queries, and is skipped entirely when nothing is in flight.
+function progressFor(deps: { accessors: Accessors }, eps: EpisodeRow[], now: number): Map<string, Progress> {
+  const live = eps.filter((e) => e.status !== "ready" && e.status !== "failed");
+  const out = new Map<string, Progress>();
+  if (live.length === 0) return out;
+  const history: StageHistory = buildStageHistory(deps.accessors.recentStageRuns);
+  for (const ep of live) {
+    const p = estimateProgress(ep, deps.accessors.episodeStageRuns(ep.id), history, now);
+    if (p) out.set(ep.id, p);
+  }
+  return out;
 }
 
 export interface EpisodesDeps {
@@ -92,13 +111,15 @@ export function createEpisodesApi(deps: EpisodesDeps) {
   }
 
   function list(c: Context): Response {
-    return c.json(deps.accessors.listEpisodes().map(toListItem));
+    const eps = deps.accessors.listEpisodes();
+    const progress = progressFor(deps, eps, Date.now());
+    return c.json(eps.map((ep) => toListItem(ep, progress.get(ep.id) ?? null)));
   }
 
   function get(c: Context): Response {
     const ep = deps.accessors.getEpisode(c.req.param("id")!);
     if (!ep) return c.json({ error: "not found" }, 404);
-    return c.json(toDetail(ep));
+    return c.json(toDetail(ep, progressFor(deps, [ep], Date.now()).get(ep.id) ?? null));
   }
 
   // Mark/unmark an episode as listened. Idempotent: re-marking an already

@@ -1166,6 +1166,20 @@ body.sheet-open {
   font-variant-numeric: tabular-nums;
 }
 
+
+/* Generation progress: same bar as playback position, tinted so a building
+   episode never reads as one you are part way through listening to. */
+.card-progress.building {
+  margin-top: 6px;
+}
+.card-progress.building > span {
+  background: hsl(calc(var(--h) + 160) 70% 58%);
+}
+.chip.building {
+  background: hsl(calc(var(--h) + 160) 55% 48% / 0.22);
+  color: hsl(calc(var(--h) + 160) 85% 80%);
+}
+
 /* ---- sources ---- */
 .sources {
   list-style: none;

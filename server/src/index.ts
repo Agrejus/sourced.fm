@@ -52,6 +52,8 @@ const worker = createWorker({
   failEpisode: accessors.failEpisode,
   stages: productionStages({ accessors, speech, now }),
   now,
+  startStageRun: accessors.startStageRun,
+  finishStageRun: accessors.finishStageRun,
   onError: (message) => console.error(`worker tick error: ${message}`),
 });
 worker.start();

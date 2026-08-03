@@ -13,6 +13,24 @@ export interface WorkerDeps {
   now?: () => number;
   tickMs?: number;
   onError?: (message: string) => void;
+  /** Stage timing, for the progress estimate. Optional: tests omit it. */
+  startStageRun?: (episodeId: string, stage: string, size: number, now: number) => number;
+  finishStageRun?: (id: number, ok: boolean, now: number) => void;
+}
+
+// What predicts this stage's duration, read off the row BEFORE the stage runs.
+// Sourcing has no signal yet — the material does not exist — so it falls back to
+// a flat historical median.
+function inputSize(ep: EpisodeRow): number {
+  switch (ep.status) {
+    case "sourced":
+      return ep.dossier_json?.length ?? 0; // script is written from the dossier
+    case "scripted":
+    case "verified":
+      return ep.script_json?.length ?? 0; // factcheck reads it, synthesis speaks it
+    default:
+      return 0;
+  }
 }
 
 // Single-loop worker. Concurrency is exactly 1 (the loop IS the guarantee — no
@@ -35,9 +53,14 @@ export function createWorker(deps: WorkerDeps) {
       return true;
     }
 
+    // Timing is recorded around the stage, not inside it, so every stage is
+    // measured the same way and a stage never has to know it is being timed.
+    const runId = deps.startStageRun?.(ep.id, stage.name, inputSize(ep), now());
     try {
       await stage.run(ep);
+      if (runId !== undefined) deps.finishStageRun?.(runId, true, now());
     } catch (e) {
+      if (runId !== undefined) deps.finishStageRun?.(runId, false, now());
       const message = e instanceof Error ? e.message : String(e);
       const attempts = ep.attempts + 1;
       deps.onError?.(`stage ${stage.name} failed for ${ep.id} (attempt ${attempts}): ${message}`);
