@@ -130,8 +130,23 @@ def _voice_samples_for(segments: Sequence[dict]) -> List[str]:
 
 
 def _whisper_words(wav_path: str) -> List[Tuple[str, float]]:
+    """Word timestamps for forced alignment.
+
+    vad_filter and condition_on_previous_text=False are not tuning knobs, they
+    decide whether alignment works at all. On defaults, an hour-long render came
+    back with 6,582 words against 12,247 actually spoken (54%) — the decoder
+    conditions on its own previous output, loops, and skips ahead — and no
+    aligner can match a script to half its words, so every episode silently fell
+    back to character-proportional timestamps. With these two options the same
+    audio yields 11,519 words (94%) and aligns for real, in less wall-clock time.
+    (Measured on a 59.4-minute episode, 2026-08-03.)
+    """
     segments_gen, _info = get_whisper().transcribe(
-        wav_path, language="en", word_timestamps=True
+        wav_path,
+        language="en",
+        word_timestamps=True,
+        vad_filter=True,
+        condition_on_previous_text=False,
     )
     words: List[Tuple[str, float]] = []
     for seg in segments_gen:
