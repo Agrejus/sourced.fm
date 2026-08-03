@@ -33,7 +33,7 @@ Read design.md first for intent; this file wins on any detail-level conflict.
 | Shared data mount (both learn + speech) | host `./data` → container `/data` |
 | SQLite file | `${DATA_DIR}/learn.db` (default `/data/learn.db`) |
 | Episode audio | `${DATA_DIR}/episodes/<episodeId>/audio.mp3` — every path in this doc written as `/data/...` means `${DATA_DIR}/...`; both services must receive the same `DATA_DIR` |
-| Speaker enum | `"HOST"` \| `"EXPERT"` (exactly, uppercase) |
+| Speaker enum | `"HOST"` \| `"EXPERT"` \| `"CRITIC"` (exactly, uppercase) |
 | Episode statuses | `submitted → sourced → scripted → verified → synthesizing → ready`, terminal `failed` |
 | Source kinds | `"article"` \| `"tweet"` \| `"topic"` |
 | LLM provider | **Ollama Cloud** — host `https://ollama.com`, `POST /api/chat`, auth `Authorization: Bearer $OLLAMA_API_KEY`; official `ollama` JS client. (VERIFIED 2026-07-25.) |
@@ -127,18 +127,31 @@ warns later versions may break). Verified contract the wrapper is built on:
   wrong for pre-Ampere GPUs (no bf16; FA2 has no Turing kernels), so we
   pass `float16` + `sdpa` explicitly. `model_path` is `microsoft/VibeVoice-1.5B`.
 - **Script input:** one text blob, per-line speaker labels
-  `Speaker 1: ...` / `Speaker 2: ...` (1-indexed; the fork's parser is
-  `^Speaker\s+(\d+):`). Map `HOST → Speaker 1`, `EXPERT → Speaker 2` in one
-  function `to_vibevoice_script(segments)`.
+  `Speaker 1: ...` / `Speaker 2: ...` / `Speaker 3: ...` (1-indexed; the fork's
+  parser is `^Speaker\s+(\d+):`), emitted by `to_vibevoice_script(segments)`.
+  Canonical speaker order is `HOST, EXPERT, CRITIC` (`SPEAKER_ORDER`), but the
+  numbers are **dense over the speakers a given script actually uses**, assigned
+  by `_speaker_numbering(segments)` and shared with the voice list. Fixed
+  per-name numbers are wrong: the processor pairs `voice_samples[i]` with the
+  `Speaker i+1:` label, so a script with no EXPERT would emit `Speaker 1` and
+  `Speaker 3` while supplying two wavs, and the second wav would be read as
+  Speaker 2 — leaving every CRITIC line unvoiced.
 - **Voice prompt wavs:** the processor conditions on one reference wav per
-  unique speaker, in first-appearance order. Ship two fork demo voices into
-  the repo: `speech/voices/host.wav` (= fork `demo/voices/en-Alice_woman.wav`,
-  female) and `speech/voices/expert.wav` (= fork `demo/voices/en-Frank_man.wav`,
-  male). These files are part of the repo, not env config; the chosen upstream
-  filenames are recorded in a comment in `speech/models.py`. Get the M1 mp3
-  quality check approved before proceeding. Kokoro answer voice: `am_michael`
-  (American male, matches EXPERT's register) — the answer must sound like the
-  same person as EXPERT.
+  unique speaker, ordered to match the labels above. Ship three fork demo voices
+  into the repo: `speech/voices/host.wav` (= fork
+  `demo/voices/en-Alice_woman.wav`, female), `speech/voices/expert.wav` (= fork
+  `demo/voices/en-Frank_man.wav`, male) and `speech/voices/critic.wav` (= fork
+  `demo/voices/in-Samuel_man.wav`, male). EXPERT and CRITIC are both male, so
+  their wavs must stay audibly distinct or the single-pass render makes them the
+  same person. Verify by measurement, not by ear-guessing from the reference:
+  `en-Carter_man.wav` reads as an obvious contrast to Frank but renders only
+  2.6 Hz from him with almost no timbre gap. Samuel renders ~19 Hz away with a
+  timbre distance matching the Alice/Frank pair (measured 2026-08-03). These files are part of
+  the repo, not env config; the chosen upstream filenames are recorded in a
+  comment in `speech/models.py`. Get the M1 mp3 quality check approved before
+  proceeding. Kokoro answer voice: `am_michael` (American male, matches EXPERT's
+  register) — the answer must sound like the same person as EXPERT, who is the
+  one who answers listener questions.
 - **Processor + generate:**
   `processor(text=[script], voice_samples=[[host_wav, expert_wav...]], padding=True, return_tensors="pt", return_attention_mask=True)`,
   move tensors to `cuda`, then
@@ -388,14 +401,15 @@ import { chatJSON } from "../llm";
 const ScriptSchema = z.object({
   title: z.string(),
   segments: z.array(z.object({
-    speaker: z.enum(["HOST", "EXPERT"]),
+    speaker: z.enum(["HOST", "EXPERT", "CRITIC"]),
     text: z.string().min(1),
   })).min(6).max(60),
 });
 
 // chatJSON uses Ollama JSON mode + the schema embedded in the prompt, then
 // validates the reply with ScriptSchema (throws on mismatch → worker retry).
-const parsed = await chatJSON(ScriptSchema, SCRIPT_SYSTEM_PROMPT, dossier.markdown);
+const system = `${SCRIPT_SYSTEM_PROMPT}\n\n${hostProfileBlock()}`;
+const parsed = await chatJSON(ScriptSchema, system, dossier.markdown);
 ```
 
 The user content is `dossier.markdown` and nothing else — the script stage
@@ -433,7 +447,7 @@ const FactcheckSchema = z.object({
     sourceUrl: z.string().optional(),
   })).min(1),
   revisedSegments: z.array(z.object({
-    speaker: z.enum(["HOST", "EXPERT"]),
+    speaker: z.enum(["HOST", "EXPERT", "CRITIC"]),
     text: z.string().min(1),
   })).min(6).max(60).optional(),        // REQUIRED iff any verdict !== "supported"
 });
@@ -442,7 +456,10 @@ const evidence = source.kind === "topic" ? await freshEvidence(source) : "";
 const userContent =
   `## Sources dossier\n${dossier.markdown}${evidence}\n\n## Script\n` +
   segments.map(s => `[${s.idx}] ${s.speaker}: ${s.text}`).join("\n");
-const result = await chatJSON(FactcheckSchema, FACTCHECK_SYSTEM_PROMPT, userContent);
+// The personas ride along: a revision replaces the whole script, so without
+// them the reviser rewrites off-character and can drop CRITIC.
+const result = await chatJSON(
+  FactcheckSchema, `${FACTCHECK_SYSTEM_PROMPT}\n\n${hostProfileBlock()}`, userContent);
 ```
 
 Stage logic (frozen — this stage NEVER moves an episode to `failed` on its
@@ -683,43 +700,114 @@ CREATE INDEX IF NOT EXISTS idx_chats_episode ON chats(episode_id, created_at);
 
 ```
 You are a research assistant preparing a source dossier for a factual
-podcast. Research the topic the user provides using web search. Prefer
-primary sources and reporting from the last year where recency matters.
+podcast that goes deep on its topic. Research the topic the user provides
+using web search. Search several times from different angles; prefer primary
+sources and reporting from the last year where recency matters. This dossier
+is the ONLY material the episode is built from, so it must be thorough enough
+to support a long, in-depth discussion — cover the topic, don't summarize it.
 
-Write a structured brief in markdown:
-- Open with a two-sentence framing of why the topic matters now.
-- Cover the key facts, the state of the art or debate, and at least one
-  common misconception.
+Write a structured brief in markdown, organized into "## " sections:
+- Open with a two-to-three sentence framing of why the topic matters now.
+- Cover, each in its own section: the key facts and background; HOW it works
+  or WHY it's true (the underlying mechanism, explained concretely); the
+  current state of the art or the live debate; the tradeoffs, limitations, or
+  open questions; at least one common misconception; and at least one genuine
+  counterargument or dissenting view.
+- Include the specific numbers, dates, names, and concrete examples an expert
+  would cite — depth comes from specifics, not generalities.
 - EVERY factual claim must name its source inline, like: "... (Source:
   <publication>, <url>)". A claim you cannot source does not go in the brief.
 - End with a "## Sources" section listing every source as "- <title>: <url>".
-- 800 to 1,500 words. No filler.
+- Aim for 2,500 to 4,000 words of substance. No filler, no padding — every
+  sentence should carry a fact or an explanation.
 ```
 
 `SCRIPT_SYSTEM_PROMPT`:
 
 ```
-You write scripts for a two-host learning podcast. Rewrite the source
-dossier the user provides as a natural spoken dialogue between HOST and
-EXPERT.
+You write scripts for a three-host learning podcast that goes deep. Rewrite
+the source dossier the user provides as a natural spoken dialogue between
+HOST, EXPERT, and CRITIC.
 
-HOST is curious and asks the questions a smart listener would ask; HOST also
-reacts, summarizes, and keeps momentum. EXPERT explains clearly with concrete
-examples and analogies, and corrects common misconceptions.
+HOST runs the show: opens it, sets up each thread, hands the questioning to
+CRITIC, keeps the exchange moving, and recaps at the end. HOST speaks for the
+listener's comprehension — asking for plain language and pulling the others out
+of shorthand — and never explains the material or supplies a fact.
+EXPERT carries the substance: explains clearly with concrete examples and
+analogies, and corrects common misconceptions.
+CRITIC forces the depth. CRITIC is adversarial on the listener's behalf and
+never hostile: refusing vague answers, stopping EXPERT to unpack any acronym or
+piece of jargon, pressing for mechanism, numbers, tradeoffs and failure cases,
+and following up until the explanation is real. CRITIC asks; CRITIC never
+asserts a fact or answers the question themselves.
 
-Requirements:
-- 1,500 to 2,200 words of dialogue total (10-15 spoken minutes).
-- First segment: HOST cold-opens with why this article matters — no
-  greetings, no "welcome to the show".
-- Last segment: HOST recaps exactly three takeaways.
+The CRITIC/EXPERT exchange is where the episode earns its length:
+- When EXPERT names a term of art, an acronym, or a pattern and moves on, CRITIC
+  stops them and makes them define it and say what it actually does.
+- A restatement is not an explanation. CRITIC takes a second and third pass on
+  the same point until the mechanism is genuinely on the table.
+- CRITIC names dodges and vagueness explicitly, and asks "compared to what?",
+  "what breaks if you don't?", "walk me through what actually happens".
+- HOST is the glue: intervening when the two circle a settled point, marking
+  what was established, and deciding when a thread is genuinely exhausted
+  rather than merely uncomfortable.
+
+Depth is the point — this is a deep dive, not a summary:
+- Work through the dossier thoroughly. Every substantive idea, mechanism,
+  number, example, and caveat it contains deserves real discussion — do not
+  skip sections or compress the material to save time.
+- Go a level deeper than the source states it: have EXPERT explain HOW and
+  WHY things work step by step, walk through concrete examples, surface
+  tradeoffs and edge cases, and address at least one likely counterargument
+  or limitation — all grounded in what the dossier supports.
+- Let the length follow the material. A rich article or brief should yield a
+  long, in-depth episode — often 30 minutes or more of dialogue. There is no
+  upper limit and no target word count; keep going until the material is
+  genuinely covered, then stop. Never pad with filler to reach a length, and
+  never cut a real point short to keep it brief.
+
+Structure and style:
+- Open with a short intro: HOST welcomes listeners to the show, "Sourced," and
+  introduces herself, then EXPERT and CRITIC introduce themselves by name (use
+  the names given in the host personas below) in one quick exchange, and HOST
+  names today's topic and why it matters right now. Keep the intro brief and
+  warm — three or four short turns — and do not give away the takeaways. Then
+  move into the substance.
+- Build in a sensible progression: foundations first, then the deeper layers,
+  then implications.
+- Last segment: HOST recaps the three-to-five most important takeaways, then
+  briefly signs off ("thanks for listening to Sourced").
+- All three speakers carry real weight. EXPERT holds the most words, but CRITIC
+  drives most of the questioning and must be present throughout — not just in
+  one segment. Never let CRITIC disappear for a long stretch, and never let the
+  episode collapse into a two-way HOST/EXPERT interview.
 - Alternate speakers naturally; no speaker twice in a row unless it reads
-  better.
+  better. The common rhythm is HOST setting up a thread, then CRITIC and EXPERT
+  going back and forth several turns while HOST stays out of it, then HOST
+  stepping in to land the point. Turns can be long when EXPERT is explaining
+  something involved.
 - Spoken-word style: contractions, short sentences. Spell out numbers,
   abbreviations, and symbols the way a person would say them.
+- Never write code as code. No file extensions, no camelCase or snake_case
+  identifiers, no globs, paths, brackets, or arrows. Write what a person says
+  out loud: "a T S X file", not ".tsx"; "the use effect hook", not "useEffect";
+  "call notes", not "call_notes"; "any name starting with use", not "use*".
+  A listener only ever hears words.
 - NO markdown, NO stage directions, NO sound-effect cues, NO segment titles.
   Text fields contain only words to be spoken aloud.
 - Use ONLY facts present in the dossier. Do not add facts, numbers, names,
   or dates from your own knowledge, even correct ones.
+- One narrow exception, so CRITIC's pressure has somewhere to land: if the
+  dossier names a standard term of art, acronym, or established concept but
+  never explains it, EXPERT may expand the acronym and give the plain, standard
+  meaning of that term. "CQRS" can become "command query responsibility
+  segregation" with a sentence on what separating reads from writes means,
+  because that is what the words denote, not a new claim about the world. This
+  covers definitions and nothing else — no added numbers, dates, names, study
+  results, benchmarks, history, or claims about who does what. EXPERT must never
+  say a term the dossier uses is unfamiliar or unclear; if the dossier truly
+  has no material on a question, EXPERT says the dossier does not cover it and
+  stops, and HOST moves the show on.
 - Preserve attribution: if the dossier attributes a claim to a source or a
   person (including a single tweet), the dialogue attributes it the same way
   — "she argues that...", "the paper claims...", never as established fact.
@@ -746,8 +834,19 @@ support.
    complete corrected script (same style rules as the original), with
    distorted claims fixed, unsupported claims removed or rewritten as
    explicitly attributed uncertainty ("the thread claims, though this isn't
-   confirmed..."). Keep the dialogue natural — repair, don't amputate.
+   confirmed..."). Keep the dialogue natural — repair, don't amputate. The
+   script has THREE speakers, HOST, EXPERT and CRITIC, described in the host
+   personas below; a revision keeps all three, in character, with CRITIC still
+   driving the questioning. Never collapse it into a two-speaker interview.
 Opinions, rhetorical questions, and the hosts' own framing are not claims.
+CRITIC's questions are not claims — CRITIC asks rather than asserts, so a
+question is only checkable if it smuggles in a factual premise.
+The plain definition or expansion of a standard term of art the dossier itself
+names is not a checkable claim, even when the dossier never defines it: saying
+"CQRS" means "command query responsibility segregation" and involves separating
+reads from writes reports what the words denote. Do not flag these. Anything
+beyond the definition — numbers, dates, names, results, adoption claims,
+history — IS checkable and needs dossier support like anything else.
 Be strict about numbers and attribution; do not pass a claim as supported
 because it is plausible.
 ```

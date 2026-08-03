@@ -108,6 +108,9 @@ live("script stage produces a valid script from a dossier", async () => {
   const speakers = new Set(script.segments.map((s) => s.speaker));
   expect(speakers.has("HOST")).toBe(true);
   expect(speakers.has("EXPERT")).toBe(true);
+  // CRITIC drives the questioning; an episode without him has collapsed back
+  // into a two-way interview, which is the failure this persona exists to fix.
+  expect(speakers.has("CRITIC")).toBe(true);
   expect(after.title).toBe(script.title);
 
   // fact-check that same script -> verified, >=1 claim

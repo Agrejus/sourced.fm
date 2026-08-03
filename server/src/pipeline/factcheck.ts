@@ -4,6 +4,7 @@ import type { Script, Segment } from "../domain";
 import type { Dossier, SourceInput } from "../fetchers/types";
 import { chatJSON, webSearch } from "../llm";
 import { FACTCHECK_SYSTEM_PROMPT } from "../prompts";
+import { hostProfileBlock } from "../hosts";
 import type { Stage } from "./stages";
 
 const FactcheckSchema = z.object({
@@ -21,7 +22,7 @@ const FactcheckSchema = z.object({
   revisedSegments: z
     .array(
       z.object({
-        speaker: z.enum(["HOST", "EXPERT"]),
+        speaker: z.enum(["HOST", "EXPERT", "CRITIC"]),
         text: z.string().min(1),
       }),
     )
@@ -66,7 +67,10 @@ export function factcheckStage(deps: { accessors: Accessors; now: () => number }
         `## Sources dossier\n${dossier.markdown}${await freshEvidence(source)}\n\n## Script\n` +
         script.segments.map((s) => `[${s.idx}] ${s.speaker}: ${s.text}`).join("\n");
 
-      const result = await chatJSON(FactcheckSchema, FACTCHECK_SYSTEM_PROMPT, userContent);
+      // The personas ride along because a revision replaces the whole script:
+      // without them the reviser rewrites off-character and can drop CRITIC.
+      const system = `${FACTCHECK_SYSTEM_PROMPT}\n\n${hostProfileBlock()}`;
+      const result = await chatJSON(FactcheckSchema, system, userContent);
 
       const allSupported = result.claims.every((c) => c.verdict === "supported");
       const factcheckJson = JSON.stringify({ claims: result.claims });

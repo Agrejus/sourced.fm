@@ -8,7 +8,15 @@ function mmss(ms: number): string {
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
-const HOSTS = "Maya & Sam";
+const HOSTS = "Maya, Sam & Theo";
+
+// Display names for the speaker enum. Keep in step with server/personas/ —
+// renaming a host in the markdown renames them on air, not here.
+const SPEAKER_NAMES: Record<string, string> = {
+  HOST: "Maya",
+  EXPERT: "Sam",
+  CRITIC: "Theo",
+};
 
 // Resume rules. A position inside the first 15s is not worth restoring, and one
 // within 15s of the end means the episode is effectively done — both start over.
@@ -1793,7 +1801,7 @@ export default function App() {
                           className={`seg ${s.speaker.toLowerCase()}${active ? " active" : ""}`}
                           onClick={() => seekToMs(s.startMs ?? 0)}
                         >
-                          <span className="seg-who">{s.speaker === "HOST" ? "Maya" : "Sam"}</span>
+                          <span className="seg-who">{SPEAKER_NAMES[s.speaker] ?? s.speaker}</span>
                           <span className="seg-text">{s.text}</span>
                           <span className="seg-ts">{mmss(s.startMs ?? 0)}</span>
                         </li>

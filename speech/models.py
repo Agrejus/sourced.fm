@@ -12,8 +12,20 @@ CUDA default is bfloat16 + flash_attention_2, so we pass these explicitly.
 
 Voice prompt wavs shipped in speech/voices/ were copied from the
 vibevoice-community/VibeVoice fork demo voices:
-  host.wav   <- demo/voices/en-Alice_woman.wav  (female, HOST / Speaker 1)
-  expert.wav <- demo/voices/en-Frank_man.wav    (male,   EXPERT / Speaker 2)
+  host.wav   <- demo/voices/en-Alice_woman.wav  (female, HOST)
+  expert.wav <- demo/voices/en-Frank_man.wav    (male,   EXPERT)
+  critic.wav <- demo/voices/in-Samuel_man.wav   (male,   CRITIC)
+
+HOST/EXPERT/CRITIC is the canonical order, but the 'Speaker N' number each one
+gets depends on who appears in the script — see _speaker_numbering.
+
+CRITIC and EXPERT are both male, so their reference wavs must stay audibly
+distinct. Measured on real renders (2026-08-03): Samuel sits about 19 Hz below
+Frank in median pitch and, more importantly, as far away in timbre as Alice is
+— so listeners hear a third person, not Frank in a different mood. The fork's
+en-Carter_man.wav was tried first and rejected: it renders 2.6 Hz from Frank
+with almost no timbre gap, and the two are indistinguishable. Re-measure before
+swapping either wav; pitch alone is not enough.
 """
 
 from __future__ import annotations
@@ -42,8 +54,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 VOICE_BY_SPEAKER = {
     "HOST": os.path.join(_HERE, "voices", "host.wav"),
     "EXPERT": os.path.join(_HERE, "voices", "expert.wav"),
+    "CRITIC": os.path.join(_HERE, "voices", "critic.wav"),
 }
-SPEAKER_NUMBER = {"HOST": 1, "EXPERT": 2}
+# Canonical speaker order. Numbering is derived from this and from which
+# speakers a script actually uses (see _speaker_numbering) rather than fixed per
+# name, so it is never out of step with the voice list.
+SPEAKER_ORDER = tuple(VOICE_BY_SPEAKER)
 
 _whisper = None
 _kokoro = None
@@ -80,21 +96,37 @@ def warmup() -> None:
     get_kokoro()
 
 
+def _speaker_numbering(segments: Sequence[dict]) -> dict:
+    """Dense 'Speaker N' numbers over the speakers this script actually uses, in
+    SPEAKER_ORDER.
+
+    The processor pairs voice_samples[i] with the 'Speaker i+1:' label, so the
+    numbers must run 1..N with no gaps. Numbering each speaker by a fixed number
+    breaks that as soon as one is absent: a HOST+CRITIC script would ask for
+    Speaker 1 and Speaker 3 while supplying two voices, and the second voice
+    would be read as Speaker 2 — leaving every CRITIC line unvoiced. Deriving
+    both the labels and the voice list from this one mapping keeps them in
+    lockstep however many speakers appear.
+    """
+    present = [name for name in SPEAKER_ORDER if any(seg["speaker"] == name for seg in segments)]
+    return {name: i + 1 for i, name in enumerate(present)}
+
+
 def to_vibevoice_script(segments: Sequence[dict]) -> str:
-    """HOST -> 'Speaker 1:', EXPERT -> 'Speaker 2:', one line per segment."""
+    """One 'Speaker N: text' line per segment, N per _speaker_numbering."""
+    numbering = _speaker_numbering(segments)
     lines = []
     for seg in segments:
-        number = SPEAKER_NUMBER[seg["speaker"]]
+        number = numbering[seg["speaker"]]
         lines.append(f"Speaker {number}: {seg['text']}")
     return "\n".join(lines)
 
 
 def _voice_samples_for(segments: Sequence[dict]) -> List[str]:
-    """One reference wav per speaker number present, in ascending number order
-    (matches the 'Speaker N:' labels the processor pairs voices with)."""
-    numbers = sorted({SPEAKER_NUMBER[seg["speaker"]] for seg in segments})
-    number_to_voice = {SPEAKER_NUMBER[name]: path for name, path in VOICE_BY_SPEAKER.items()}
-    return [number_to_voice[n] for n in numbers]
+    """One reference wav per speaker present, ordered to match the labels
+    to_vibevoice_script emits."""
+    numbering = _speaker_numbering(segments)
+    return [VOICE_BY_SPEAKER[name] for name in sorted(numbering, key=lambda n: numbering[n])]
 
 
 def _whisper_words(wav_path: str) -> List[Tuple[str, float]]:

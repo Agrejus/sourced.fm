@@ -29,7 +29,7 @@ export interface EpisodeListItem {
 
 export interface Segment {
   idx: number;
-  speaker: "HOST" | "EXPERT";
+  speaker: "HOST" | "EXPERT" | "CRITIC";
   text: string;
   startMs?: number;
 }

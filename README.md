@@ -1,7 +1,7 @@
 # Sourced.fm
 
 Turn an article URL, a YouTube link, an X/Twitter link, a bare topic, or a
-written research assignment into a fact-checked, interactive two-host podcast you can listen to
+written research assignment into a fact-checked, interactive three-host podcast you can listen to
 and interrupt with spoken questions. Every episode is built from a cited source
 dossier and passes a claim-by-claim verification stage before any audio is
 rendered.
@@ -48,10 +48,12 @@ cd app && bun run build && bun run lint
 
 ## Third-party material
 
-`speech/voices/host.wav` and `speech/voices/expert.wav` are the demo voice
-prompts from the [vibevoice-community VibeVoice
-fork](https://github.com/vibevoice-community/VibeVoice) (`en-Alice_woman.wav`
-and `en-Frank_man.wav`), redistributed under that project's MIT license.
+`speech/voices/host.wav`, `speech/voices/expert.wav` and
+`speech/voices/critic.wav` are the demo voice prompts from the
+[vibevoice-community VibeVoice
+fork](https://github.com/vibevoice-community/VibeVoice) (`en-Alice_woman.wav`,
+`en-Frank_man.wav` and `in-Samuel_man.wav`), redistributed under that project's
+MIT license.
 `deploy/compose.yml` mirrors the topology of
 [Firecrawl](https://github.com/firecrawl/firecrawl)'s compose file and pulls its
 published images by digest.

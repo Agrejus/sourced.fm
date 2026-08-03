@@ -1130,6 +1130,13 @@ body.sheet-open {
   background: hsl(var(--h) 60% 50% / 0.2);
   border-bottom-right-radius: 5px;
 }
+/* Theo asks, so he sits on Maya's side of the thread; the hue offset keeps him
+   distinct from her neutral surface and from Sam's episode tint. */
+.seg.critic {
+  align-self: flex-start;
+  background: hsl(calc(var(--h) + 160) 55% 48% / 0.19);
+  border-bottom-left-radius: 5px;
+}
 .seg.active {
   border-color: hsl(var(--h) 90% 65%);
   box-shadow: 0 0 0 3px hsl(var(--h) 90% 60% / 0.2);
@@ -1144,6 +1151,9 @@ body.sheet-open {
 }
 .seg.host .seg-who {
   color: rgba(255, 255, 255, 0.65);
+}
+.seg.critic .seg-who {
+  color: hsl(calc(var(--h) + 160) 80% 76%);
 }
 .seg-text {
   font-size: 14.5px;

@@ -8,7 +8,7 @@ headless-browser SDK.
 
 Give the system **an article URL, a YouTube link, an X/Twitter link, or just a
 topic**. It
-builds a cited source dossier, rewrites it as a two-host dialogue,
+builds a cited source dossier, rewrites it as a three-host dialogue,
 **fact-checks the script against the sources before any audio exists**,
 synthesizes it locally on an NVIDIA GPU (VibeVoice), and publishes it
 as an episode you can play on your phone from anywhere. While
@@ -51,7 +51,7 @@ trail.
    - *Topic* → **research mode**: the LLM with Ollama's web search/fetch tools
      gathers current sources and writes a cited brief. The dossier is the brief
      plus the source list.
-3. **Script** — an LLM rewrites the dossier as a dialogue between two hosts:
+3. **Script** — an LLM rewrites the dossier as a dialogue between three hosts:
    HOST (curious, asks the questions you would) and EXPERT (explains). Output is
    structured segments, not free text.
 4. **Fact-check** — a separate LLM pass lists the script's factual claims,
@@ -257,15 +257,34 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   asks/reacts/summarizes and EXPERT explains a level deeper than the source
   states it (mechanisms, examples, tradeoffs, a counterargument) — all still
   grounded strictly in the dossier. Opening: a short branded intro — HOST
-  welcomes listeners to "Sourced," the two hosts introduce themselves by name
+  welcomes listeners to "Sourced," the three hosts introduce themselves by name
   (from the personas), and HOST tees up the topic — then into the substance.
   Last segment: HOST recaps the 3–5 most important takeaways and signs off.
+- **Three roles, deliberately separated.** HOST directs the show and speaks for
+  the listener's comprehension; EXPERT carries the substance; CRITIC forces the
+  depth — refusing vague answers, making EXPERT unpack every term of art, and
+  following up until the mechanism is on the table. CRITIC exists because a
+  HOST who both steers *and* interrogates does neither well: the questioning
+  stays polite and the episode stops at the first plausible answer. CRITIC asks
+  and never asserts, so CRITIC's turns add no factual surface to fact-check.
 - **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the
-  female voice) and `expert.md` (Sam, the male voice), read fresh each episode
-  by `hosts.ts` and appended to the script system prompt so every episode keeps
-  the same two-host personas and style. The personas dir is bind-mounted into
-  `learn` (read-only), so editing on the host retunes the show on the next
-  episode with no rebuild. Keep genders aligned with `speech/voices/`.
+  female voice), `expert.md` (Sam, the first male voice) and `critic.md` (Theo,
+  the second male voice), read fresh each episode by `hosts.ts` and appended to
+  the script system prompt so every episode keeps the same three-host personas
+  and style. The same block is appended to the fact-check prompt, because a
+  revision replaces the whole script and would otherwise rewrite it
+  off-character and drop CRITIC. The personas dir is bind-mounted into `learn`
+  (read-only), so editing on the host retunes the show on the next episode with
+  no rebuild. Keep genders aligned with `speech/voices/`, and keep EXPERT's and
+  CRITIC's reference wavs audibly distinct — they are both male.
+- **Definitions are not new facts.** The script stage is dossier-only, which
+  made EXPERT hedge on terms the dossier named but never explained ("I'm not
+  sure what they mean by CQRS"). CRITIC pressing on such a term would otherwise
+  produce an unanswerable question, so the script and fact-check prompts carry a
+  narrow carve-out: EXPERT may expand an acronym and give the plain standard
+  meaning of a term of art the dossier uses, and the fact-checker does not treat
+  that as a checkable claim. Definitions only — no added numbers, dates, names,
+  results, or history.
 - Parse, don't validate downstream: reject empty segments, unknown speakers,
   > 400 segments → stage error (a runaway guard, not a target; backoff retry
   covers model flakiness).
