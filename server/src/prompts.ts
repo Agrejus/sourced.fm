@@ -82,6 +82,45 @@ Write markdown in this shape:
 - End with a "## Sources" section listing every source as "- <title>: <url>".
 - No filler and no padding. Every sentence carries a fact or an explanation.`;
 
+// ---- dossier enrichment (thin sources: a transcript that names without explaining) ----
+
+export const ENRICH_GAPS_PROMPT = `You are preparing source material for a podcast that explains things properly.
+The user gives you a source — usually a video transcript. Transcripts name
+concepts and move on, which leaves the episode unable to explain them.
+
+Find the concepts this source NAMES but never actually EXPLAINS, and that a
+listener would need explained to follow the material. Look for acronyms used
+without expansion, pattern or algorithm names dropped in passing, and
+mechanisms asserted but not walked through.
+
+For each one give:
+- "term": the concept as the source refers to it, plus its expansion if it is
+  an acronym.
+- "why": one sentence on what the source leaves unexplained about it.
+- "query": the search query that would find how it actually works.
+
+Rules:
+- Only concepts genuinely present in the source. Do not invent topics it never
+  raises, and do not list something it already explains well.
+- Order by how much the episode needs it, most important first.
+- At most 6. Fewer is fine — return an empty list if the source explains itself
+  well already.`;
+
+export const ENRICH_SECTION_PROMPT = `You research ONE concept so a podcast can explain it properly. The user names
+the concept and what the original source left out. Use web search and fetch
+pages; prefer primary sources and standard references.
+
+Write the explanation for this concept only:
+- Lead with what it is in one plain sentence, then how it actually works, step
+  by step and concretely.
+- Give the specific numbers, names, dates and worked examples an expert would
+  cite. Depth comes from specifics.
+- Cover the tradeoff or limitation, and the common misconception if there is one.
+- EVERY factual claim must name its source inline, like: "... (Source:
+  <publication>, <url>)". A claim you cannot source does not go in.
+- 250 to 500 words. No preamble, no restating the question, no summary of what
+  you are about to do.`;
+
 export const SCRIPT_SYSTEM_PROMPT = `You write scripts for a three-host learning podcast that goes deep. Rewrite
 the source dossier the user provides as a natural spoken dialogue between
 HOST, EXPERT, and CRITIC.
@@ -152,6 +191,12 @@ Structure and style:
   A listener only ever hears words.
 - NO markdown, NO stage directions, NO sound-effect cues, NO segment titles.
   Text fields contain only words to be spoken aloud.
+- Never name the source material as a document. The hosts have watched a video,
+  read an article, or read a thread — they have not read a "dossier", "source
+  material", "brief", "notes", or "the sources". Those words must never appear
+  in spoken text. Say "the video doesn't get into that", "CJ doesn't explain
+  it", "the article says", "the thread claims". When the material runs out, name
+  the real thing that runs out, not the paperwork.
 - Use ONLY facts present in the dossier. Do not add facts, numbers, names,
   or dates from your own knowledge, even correct ones.
 - One narrow exception, so CRITIC's pressure has somewhere to land: if the
@@ -187,7 +232,11 @@ support.
    complete corrected script (same style rules as the original), with
    distorted claims fixed, unsupported claims removed or rewritten as
    explicitly attributed uncertainty ("the thread claims, though this isn't
-   confirmed..."). Keep the dialogue natural — repair, don't amputate. The
+   confirmed..."). Keep the dialogue natural — repair, don't amputate.
+   A revision is spoken text, so it obeys the same vocabulary rule as the
+   original: never have a host say "dossier", "source material", "brief",
+   "notes" or "the sources" out loud. Name the real source — "the video doesn't
+   get into that", "the article says" — never the paperwork. The
    script has THREE speakers, HOST, EXPERT and CRITIC, described in the host
    personas below; a revision keeps all three, in character, with CRITIC still
    driving the questioning. Never collapse it into a two-speaker interview.

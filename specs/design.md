@@ -52,8 +52,9 @@ trail.
      gathers current sources and writes a cited brief. The dossier is the brief
      plus the source list.
 3. **Script** — an LLM rewrites the dossier as a dialogue between three hosts:
-   HOST (curious, asks the questions you would) and EXPERT (explains). Output is
-   structured segments, not free text.
+   HOST (runs the show and speaks for your comprehension), EXPERT (explains),
+   and CRITIC (presses EXPERT for the mechanism and refuses vague answers).
+   Output is structured segments, not free text.
 4. **Fact-check** — a separate LLM pass lists the script's factual claims,
    verifies each against the dossier (plus fresh web search for topic
    episodes), and produces one revised script with unsupported claims cut or
@@ -179,7 +180,9 @@ which fetcher ran.
 type SourceInput =
   | { kind: "article"; url: string }
   | { kind: "tweet"; url: string }
-  | { kind: "topic"; topic: string };
+  | { kind: "youtube"; url: string }
+  | { kind: "topic"; topic: string }
+  | { kind: "research"; brief: string; seedUrls: string[] };
 
 interface Dossier {
   markdown: string;                    // the material the script may use — nothing else
@@ -225,6 +228,28 @@ text body is `topic`.
   be deep enough to support a long discussion. The dossier is the brief;
   `sources` come from the tool results. A topic that turns up no usable sources
   is a `FetchError`, not a made-up episode.
+
+**Enrichment of thin sources (`fetchers/enrich.ts`).** A transcript names a
+concept and moves on — "we use BPE", "this is CQRS" — and because the script
+stage may use nothing but the dossier, EXPERT correctly refuses to explain it
+and the listener hears "the video doesn't get into that" exactly where they
+wanted the mechanism. CRITIC makes this worse by design: he presses for depth
+the source cannot supply. The fix belongs upstream, in the material, not in
+looser rules for the dialogue. After a fetcher builds its dossier it may call
+`enrichDossier`, which finds the concepts the source names but never explains
+(one structured call, at most 6), researches each through the same
+`runWebAgent` loop that topic research uses, and appends them with their
+citations. Wired into `youtube` today; any thin source can adopt it by passing
+its own `sourceNoun`.
+
+Two invariants:
+- **It never fails an episode.** A short source, no gaps found, a model error,
+  or every concept failing all degrade to the un-enriched dossier.
+- **The appended section disowns the source, in the dossier text itself.** The
+  script prompt preserves attribution, so without that preamble the dialogue
+  credits the video with research it never contained. The material is labelled
+  background to be attributed as "the standard explanation is…", never to the
+  source or its author.
 
 ### 2.4 Storage (bun:sqlite, WAL mode)
 
