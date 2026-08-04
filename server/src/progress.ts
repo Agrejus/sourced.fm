@@ -112,6 +112,34 @@ export interface EpisodeRun {
 }
 
 /**
+ * The runs belonging to the current pass through the pipeline.
+ *
+ * An episode can be pushed back through a stage it already finished — a
+ * re-render after a voice change replays only synthesize, for instance. Every
+ * attempt leaves a row, so summing all of them counted a previous pass's work as
+ * time spent on this one, and an episode that had not started re-rendering
+ * reported 67%.
+ *
+ * A new pass begins at the first run of a stage that already completed
+ * successfully. A failed run does not mark a stage complete, so an ordinary
+ * retry stays inside the same pass.
+ */
+export function currentPass(runs: EpisodeRun[]): EpisodeRun[] {
+  const ordered = [...runs].sort((a, b) => a.startedAt - b.startedAt);
+  let pass: EpisodeRun[] = [];
+  let completed = new Set<string>();
+  for (const run of ordered) {
+    if (completed.has(run.stage)) {
+      pass = [];
+      completed = new Set<string>();
+    }
+    pass.push(run);
+    if (run.endedAt !== null && run.ok === 1) completed.add(run.stage);
+  }
+  return pass;
+}
+
+/**
  * Progress for one episode, or null when it is finished or failed (nothing to
  * estimate). Time already spent on this episode is real measured time; only the
  * remainder is predicted, so the number self-corrects as the episode proceeds.
@@ -126,10 +154,11 @@ export function estimateProgress(
   if (!stage) return null; // ready, failed — no work in flight
 
   // Real time already spent, including a retry that failed: the wall clock the
-  // user waited through is the honest denominator.
+  // user waited through is the honest denominator. Scoped to this pass, so a
+  // re-render is measured from when the re-render started.
   let spentMs = 0;
   let currentElapsed = 0;
-  for (const run of runs) {
+  for (const run of currentPass(runs)) {
     if (run.endedAt !== null) {
       spentMs += Math.max(0, run.endedAt - run.startedAt);
     } else {
