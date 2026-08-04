@@ -48,12 +48,13 @@ cd app && bun run build && bun run lint
 
 ## Third-party material
 
-`speech/voices/host.wav`, `speech/voices/expert.wav` and
-`speech/voices/critic.wav` are the demo voice prompts from the
-[vibevoice-community VibeVoice
-fork](https://github.com/vibevoice-community/VibeVoice) (`en-Alice_woman.wav`,
-`en-Frank_man.wav` and `in-Samuel_man.wav`), redistributed under that project's
-MIT license.
+`speech/voices/host.wav` and `speech/voices/expert.wav` are demo voice prompts
+from the [vibevoice-community VibeVoice
+fork](https://github.com/vibevoice-community/VibeVoice) (`en-Alice_woman.wav` and
+`en-Frank_man.wav`), redistributed under that project's MIT license.
+`speech/voices/critic.wav` is generated locally by `speech/make_critic_voice.py`
+with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), so it
+carries no third-party audio.
 `deploy/compose.yml` mirrors the topology of
 [Firecrawl](https://github.com/firecrawl/firecrawl)'s compose file and pulls its
 published images by digest.

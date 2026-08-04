@@ -24,14 +24,14 @@ const STAGE_LABEL: Record<string, string> = {
   synthesize: "recording",
 };
 
-const HOSTS = "Maya, Sam & Theo";
+const HOSTS = "Maya, Sam & Ray";
 
 // Display names for the speaker enum. Keep in step with server/personas/ —
 // renaming a host in the markdown renames them on air, not here.
 const SPEAKER_NAMES: Record<string, string> = {
   HOST: "Maya",
   EXPERT: "Sam",
-  CRITIC: "Theo",
+  CRITIC: "Ray",
 };
 
 // Resume rules. A position inside the first 15s is not worth restoring, and one
