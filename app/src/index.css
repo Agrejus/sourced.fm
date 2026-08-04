@@ -1130,7 +1130,7 @@ body.sheet-open {
   background: hsl(var(--h) 60% 50% / 0.2);
   border-bottom-right-radius: 5px;
 }
-/* Ray asks, so he sits on Maya's side of the thread; the hue offset keeps him
+/* Theo asks, so he sits on Maya's side of the thread; the hue offset keeps him
    distinct from her neutral surface and from Sam's episode tint. */
 .seg.critic {
   align-self: flex-start;

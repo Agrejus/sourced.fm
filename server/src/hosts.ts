@@ -17,7 +17,7 @@ const FALLBACK_HOST =
 const FALLBACK_EXPERT =
   "EXPERT is Sam — calm and precise, generous with analogies. He explains without jargon, expands every term of art he uses, answers CRITIC's pressure by going a level deeper rather than restating, admits real uncertainty, and never lectures.";
 const FALLBACK_CRITIC =
-  "CRITIC is Ray — sharp and direct, adversarial on the listener's behalf and never hostile. He refuses vague answers, stops EXPERT to unpack any acronym or jargon, presses for mechanism, numbers, tradeoffs and failure cases, and follows up until the explanation is real. He asks; he never asserts or answers himself.";
+  "CRITIC is Theo — sharp and direct, adversarial on the listener's behalf and never hostile. He refuses vague answers, stops EXPERT to unpack any acronym or jargon, presses for mechanism, numbers, tradeoffs and failure cases, and follows up until the explanation is real. He asks; he never asserts or answers himself.";
 
 function readPersona(file: string, fallback: string): string {
   try {

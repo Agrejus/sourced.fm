@@ -293,7 +293,7 @@ chats(id TEXT PK, episode_id FK, role TEXT CHECK(role IN ('user','assistant')),
   stays polite and the episode stops at the first plausible answer. CRITIC asks
   and never asserts, so CRITIC's turns add no factual surface to fact-check.
 - **Host profiles** — tunable markdown at `server/personas/host.md` (Maya, the
-  female voice), `expert.md` (Sam, the first male voice) and `critic.md` (Ray,
+  female voice), `expert.md` (Sam, the first male voice) and `critic.md` (Theo,
   the second male voice), read fresh each episode by `hosts.ts` and appended to
   the script system prompt so every episode keeps the same three-host personas
   and style. The same block is appended to the fact-check prompt, because a

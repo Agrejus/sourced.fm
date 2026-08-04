@@ -1,8 +1,13 @@
-"""Regenerate speech/voices/critic.wav (Ray's reference voice) with Kokoro.
+"""Generate an alternative CRITIC reference voice with Kokoro.
 
-Ray's reference is generated rather than borrowed, which keeps it reproducible
-and free of third-party attribution — Kokoro is Apache-2.0 and the audio is
-rendered here. host.wav and expert.wav are still the fork's demo clips.
+NOT what currently ships. critic.wav is the fork's in-Samuel_man.wav, chosen by
+ear for reading as more inquisitive. This script exists because a Kokoro-based
+reference is a real option: it is reproducible and free of third-party
+attribution (Kokoro is Apache-2.0, rendered here), and am_onyx measured 11-26 Hz
+from Frank across full episodes against Samuel's ~4 Hz. Reach for it if CRITIC
+and EXPERT ever become genuinely hard to tell apart.
+
+Running this overwrites critic.wav, so copy the current file aside first.
 
 Run inside the speech container, which already has Kokoro:
 
@@ -10,9 +15,9 @@ Run inside the speech container, which already has Kokoro:
   podman cp learn-speech-1:/app/voices/critic.wav speech/voices/critic.wav
 
 Choosing a voice: pitch separation from expert.wav is the measure that holds up.
-Ray and Sam are both male, so if their rendered pitches converge the listener
-hears one person arguing with himself. am_onyx renders about 19 Hz below Frank,
-roughly twice the gap of the next candidate. Do NOT use am_michael — that is
+CRITIC and EXPERT are both male, so if their rendered pitches converge the
+listener hears one person arguing with himself. am_onyx renders about 19 Hz below
+Frank, roughly twice the gap of the next candidate. Do NOT use am_michael — that is
 KOKORO_VOICE, the voice that answers listener questions, and it must stay
 recognisable as Sam.
 
@@ -36,7 +41,7 @@ LANG = "a"  # 'a' = American English, and must match the voice prefix
 SAMPLE_RATE = 24000
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices", "critic.wav")
 
-# Ray's register — short, probing, a little impatient. Matching the manner in the
+# CRITIC's register — short, probing, a little impatient. Matching the manner in the
 # reference helps the clone carry it into the episode.
 TEXT = (
     "Hold on. That's the label, not the mechanism. Walk me through what actually happens, "
