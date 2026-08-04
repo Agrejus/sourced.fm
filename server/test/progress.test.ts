@@ -229,3 +229,35 @@ test("currentPass tolerates out-of-order rows", () => {
   expect(currentPass(shuffled)).toHaveLength(4);
   expect(currentPass([])).toEqual([]);
 });
+
+
+test("an episode queued for re-render reads 0-ish, not its previous render's hour", () => {
+  // Observed live: "Pacing" reported 50% before its re-render had started,
+  // because the last successful synthesize was treated as the current pass.
+  const row = ep({ status: "verified", dossier_json: "d".repeat(50_000), script_json: "s".repeat(63_553) });
+  const queuedNotStarted: EpisodeRun[] = [
+    { stage: "source", startedAt: 1_000, endedAt: 115_000, ok: 1 },
+    { stage: "script", startedAt: 115_000, endedAt: 163_000, ok: 1 },
+    { stage: "factcheck", startedAt: 163_000, endedAt: 277_000, ok: 0 },
+    { stage: "factcheck", startedAt: 277_000, endedAt: 331_000, ok: 1 },
+    { stage: "synthesize", startedAt: 331_000, endedAt: 3_403_000, ok: 1 },
+    { stage: "synthesize", startedAt: 4_000_000, endedAt: 7_186_000, ok: 1 },
+  ];
+  const p = estimateProgress(row, queuedNotStarted, NO_HISTORY, NOW)!;
+  expect(p.percent).toBe(1);            // clamped floor: nothing of this pass has run
+  expect(p.etaSeconds).toBeGreaterThan(60);
+});
+
+test("a failed attempt at the pending stage still counts, a successful one does not", () => {
+  const row = ep({ status: "verified", script_json: "s".repeat(60_000) });
+  const base: EpisodeRun[] = [{ stage: "synthesize", startedAt: 1_000, endedAt: 2_000_000, ok: 1 }];
+  const queued = estimateProgress(row, base, NO_HISTORY, NOW)!;
+  const afterFailure = estimateProgress(
+    row,
+    [...base, { stage: "synthesize", startedAt: NOW - 420_000, endedAt: NOW - 10_000, ok: 0 }],
+    NO_HISTORY,
+    NOW,
+  )!;
+  expect(queued.percent).toBe(1);
+  expect(afterFailure.percent).toBeGreaterThan(queued.percent);
+});

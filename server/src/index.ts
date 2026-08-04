@@ -45,6 +45,8 @@ app.get("/*", async (c) => {
 // Crash recovery: re-render anything left mid-synthesis (§2.2).
 const reset = accessors.resetStuckSynthesizing(now());
 if (reset > 0) console.log(`reset ${reset} stuck synthesizing episode(s) to verified`);
+const orphans = accessors.closeOrphanedStageRuns(now());
+if (orphans > 0) console.log(`closed ${orphans} orphaned stage run(s) left open by a crash`);
 
 const worker = createWorker({
   claimNext: accessors.claimNextPipelineEpisode,

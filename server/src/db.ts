@@ -312,6 +312,16 @@ export function createAccessors(database: Database) {
     );
   }
 
+  // A hard kill (container restart mid-stage) never reaches finishStageRun, so
+  // the row stays open and the progress estimate reads its elapsed time forever.
+  // Boot closes them as failed, next to resetStuckSynthesizing which handles the
+  // episode side of the same crash.
+  function closeOrphanedStageRuns(now: number): number {
+    return database
+      .query("UPDATE stage_runs SET ended_at = ?, ok = 0 WHERE ended_at IS NULL")
+      .run(now).changes;
+  }
+
   function finishStageRun(id: number, ok: boolean, now: number): void {
     database
       .query("UPDATE stage_runs SET ended_at = ?, ok = ? WHERE id = ?")
@@ -362,6 +372,7 @@ export function createAccessors(database: Database) {
     claimNextPipelineEpisode,
     startStageRun,
     finishStageRun,
+    closeOrphanedStageRuns,
     recentStageRuns,
     episodeStageRuns,
     openStageRun,

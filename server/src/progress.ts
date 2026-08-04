@@ -156,9 +156,18 @@ export function estimateProgress(
   // Real time already spent, including a retry that failed: the wall clock the
   // user waited through is the honest denominator. Scoped to this pass, so a
   // re-render is measured from when the re-render started.
+  //
+  // A successful run of the stage still pending belongs to an earlier pass by
+  // definition — the episode was pushed back to re-run it, and the new pass has
+  // no runs yet. Without this an episode queued for re-render reported 50%
+  // before starting, carrying its previous render's hour. Failed runs of the
+  // pending stage are kept: that time was really spent waiting.
+  const pass = currentPass(runs).filter(
+    (r) => !(r.stage === stage && r.endedAt !== null && r.ok === 1),
+  );
   let spentMs = 0;
   let currentElapsed = 0;
-  for (const run of currentPass(runs)) {
+  for (const run of pass) {
     if (run.endedAt !== null) {
       spentMs += Math.max(0, run.endedAt - run.startedAt);
     } else {
