@@ -12,7 +12,7 @@ const ScriptSchema = z.object({
   segments: z
     .array(
       z.object({
-        speaker: z.enum(["HOST", "EXPERT"]),
+        speaker: z.enum(["HOST", "EXPERT", "CRITIC"]),
         text: z.string().min(1),
       }),
     )

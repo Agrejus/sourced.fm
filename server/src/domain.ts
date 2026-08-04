@@ -1,6 +1,6 @@
 // Shared domain shapes stored as JSON on the episode row.
 
-export type Speaker = "HOST" | "EXPERT";
+export type Speaker = "HOST" | "EXPERT" | "CRITIC";
 
 export interface Segment {
   idx: number;

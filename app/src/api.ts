@@ -24,12 +24,22 @@ export interface EpisodeListItem {
   positionMs: number;
   /** What a long-running stage is doing right now (deep research); null when idle. */
   note: string | null;
+  progress: Progress | null;
   createdAt: number;
+}
+
+/** Estimated generation progress; null once the episode is ready or failed. */
+export interface Progress {
+  /** 1-97 while work is in flight — never 0, never 100. */
+  percent: number;
+  /** Seconds left, or null when there is no basis for a guess. */
+  etaSeconds: number | null;
+  stage: "source" | "script" | "factcheck" | "synthesize";
 }
 
 export interface Segment {
   idx: number;
-  speaker: "HOST" | "EXPERT";
+  speaker: "HOST" | "EXPERT" | "CRITIC";
   text: string;
   startMs?: number;
 }
@@ -55,6 +65,7 @@ export interface EpisodeDetail {
   listenedAt: number | null;
   positionMs: number;
   note: string | null;
+  progress: Progress | null;
   error: { stage: string; message: string } | null;
   createdAt: number;
 }

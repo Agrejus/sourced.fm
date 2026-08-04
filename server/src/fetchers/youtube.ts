@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { enrichDossier } from "./enrich";
 import type { Dossier, FetchResult, ProgressReporter, SourceFetcher, SourceInput } from "./types";
 
 // A YouTube link becomes an episode by way of its transcript.
@@ -126,20 +127,23 @@ export const youtubeFetcher: SourceFetcher = {
         return { ok: false, error: { code: "empty", message: "transcript too short to use" } };
       }
       if (body.source === "whisper") onProgress?.("transcribed the audio, building the dossier");
-      return {
-        ok: true,
-        value: buildYoutubeDossier(
-          {
-            title: body.title ?? input.url,
-            author: body.author ?? "",
-            durationSec: body.durationSec ?? 0,
-            description: body.description ?? "",
-            source: body.source ?? "captions",
-            transcript: body.transcript,
-          },
-          input.url,
-        ),
-      };
+      const base = buildYoutubeDossier(
+        {
+          title: body.title ?? input.url,
+          author: body.author ?? "",
+          durationSec: body.durationSec ?? 0,
+          description: body.description ?? "",
+          source: body.source ?? "captions",
+          transcript: body.transcript,
+        },
+        input.url,
+      );
+      // A transcript names concepts and moves on, which leaves the episode
+      // unable to explain them (the script stage may only use the dossier).
+      // Enrichment researches those gaps so the depth exists in the source
+      // material rather than being invented in the dialogue. Degrades to the
+      // bare transcript on any failure.
+      return { ok: true, value: await enrichDossier(base, { sourceNoun: "the video", onProgress }) };
     } catch (e) {
       const aborted = e instanceof Error && e.name === "AbortError";
       return {

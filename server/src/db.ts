@@ -40,6 +40,21 @@ CREATE TABLE IF NOT EXISTS chats (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chats_episode ON chats(episode_id, created_at);
+CREATE TABLE IF NOT EXISTS stage_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id  TEXT NOT NULL REFERENCES episodes(id),
+  stage       TEXT NOT NULL,
+  -- The input-size signal known BEFORE this stage ran (dossier chars for
+  -- script, script chars for factcheck/synthesize, 0 when nothing is known
+  -- yet). Duration per unit of size is what makes an estimate transferable
+  -- between a 10-minute episode and an hour-long one.
+  size        INTEGER NOT NULL DEFAULT 0,
+  started_at  INTEGER NOT NULL,
+  ended_at    INTEGER,
+  ok          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_stage_runs_stage ON stage_runs(stage, ok, ended_at);
+CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id, started_at);
 `;
 
 // Additive column migrations for databases created before the column existed.
@@ -282,11 +297,85 @@ export function createAccessors(database: Database) {
       .all(episodeId);
   }
 
+  // ---- stage timing (feeds the progress estimate; never read by the pipeline) ----
+
+  // Opens a run and returns its id. A row with ended_at NULL is a stage in
+  // flight, which is exactly what the estimator needs to measure elapsed time.
+  function startStageRun(episodeId: string, stage: string, size: number, now: number): number {
+    return Number(
+      database
+        .query<{ id: number }, [string, string, number, number]>(
+          `INSERT INTO stage_runs (episode_id, stage, size, started_at)
+           VALUES (?, ?, ?, ?) RETURNING id`,
+        )
+        .get(episodeId, stage, size, now)!.id,
+    );
+  }
+
+  // A hard kill (container restart mid-stage) never reaches finishStageRun, so
+  // the row stays open and the progress estimate reads its elapsed time forever.
+  // Boot closes them as failed, next to resetStuckSynthesizing which handles the
+  // episode side of the same crash.
+  function closeOrphanedStageRuns(now: number): number {
+    return database
+      .query("UPDATE stage_runs SET ended_at = ?, ok = 0 WHERE ended_at IS NULL")
+      .run(now).changes;
+  }
+
+  function finishStageRun(id: number, ok: boolean, now: number): void {
+    database
+      .query("UPDATE stage_runs SET ended_at = ?, ok = ? WHERE id = ?")
+      .run(now, ok ? 1 : 0, id);
+  }
+
+  // Completed successful runs, newest first — the sample set the estimate is
+  // built from. Failed runs are excluded: a stage that threw after 2 seconds
+  // says nothing about how long the work takes.
+  function recentStageRuns(stage: string, limit: number): { durationMs: number; size: number }[] {
+    return database
+      .query<{ durationMs: number; size: number }, [string, number]>(
+        `SELECT (ended_at - started_at) AS durationMs, size FROM stage_runs
+         WHERE stage = ? AND ok = 1 AND ended_at IS NOT NULL AND ended_at > started_at
+         ORDER BY ended_at DESC LIMIT ?`,
+      )
+      .all(stage, limit);
+  }
+
+  /** Every run for one episode, oldest first — this episode's own history. */
+  function episodeStageRuns(
+    episodeId: string,
+  ): { stage: string; startedAt: number; endedAt: number | null; ok: number | null }[] {
+    return database
+      .query<{ stage: string; startedAt: number; endedAt: number | null; ok: number | null }, [string]>(
+        `SELECT stage, started_at AS startedAt, ended_at AS endedAt, ok FROM stage_runs
+         WHERE episode_id = ? ORDER BY started_at ASC`,
+      )
+      .all(episodeId);
+  }
+
+  /** The open run for an episode, if a stage is in flight right now. */
+  function openStageRun(episodeId: string): { stage: string; startedAt: number } | null {
+    return (
+      database
+        .query<{ stage: string; startedAt: number }, [string]>(
+          `SELECT stage, started_at AS startedAt FROM stage_runs
+           WHERE episode_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`,
+        )
+        .get(episodeId) ?? null
+    );
+  }
+
   return {
     insertEpisode,
     getEpisode,
     listEpisodes,
     claimNextPipelineEpisode,
+    startStageRun,
+    finishStageRun,
+    closeOrphanedStageRuns,
+    recentStageRuns,
+    episodeStageRuns,
+    openStageRun,
     updateEpisodeStage,
     failEpisode,
     scheduleRetry,

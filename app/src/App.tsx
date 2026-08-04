@@ -8,7 +8,31 @@ function mmss(ms: number): string {
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
-const HOSTS = "Maya & Sam";
+// "45s" / "12m" / "1h 05m" — a rough time-remaining label for generation.
+function etaLabel(seconds: number): string {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+}
+
+// What each pipeline stage is called on screen while it runs.
+const STAGE_LABEL: Record<string, string> = {
+  source: "reading sources",
+  script: "writing",
+  factcheck: "fact-checking",
+  synthesize: "recording",
+};
+
+const HOSTS = "Maya, Sam & Theo";
+
+// Display names for the speaker enum. Keep in step with server/personas/ —
+// renaming a host in the markdown renames them on air, not here.
+const SPEAKER_NAMES: Record<string, string> = {
+  HOST: "Maya",
+  EXPERT: "Sam",
+  CRITIC: "Theo",
+};
 
 // Resume rules. A position inside the first 15s is not worth restoring, and one
 // within 15s of the end means the episode is effectively done — both start over.
@@ -885,7 +909,9 @@ export default function App() {
                       : "ready"
                     : e.status === "failed"
                       ? "failed"
-                      : e.status}
+                      : e.progress
+                        ? `${e.progress.percent}%`
+                        : e.status}
                 </span>
                 <span className="kind-tag">{e.sourceKind}</span>
                 {listened && <span className="chip listened">✓ Listened</span>}
@@ -895,9 +921,20 @@ export default function App() {
                   </span>
                 )}
               </span>
+              {busyState && e.progress && (
+                <span className="chip building">
+                  {STAGE_LABEL[e.progress.stage] ?? e.progress.stage}
+                  {e.progress.etaSeconds !== null ? ` · ~${etaLabel(e.progress.etaSeconds)} left` : ""}
+                </span>
+              )}
               {state === "progress" && (
                 <span className="card-progress" aria-hidden="true">
                   <span style={{ width: `${percent}%` }} />
+                </span>
+              )}
+              {busyState && e.progress && (
+                <span className="card-progress building" aria-hidden="true">
+                  <span style={{ width: `${e.progress.percent}%` }} />
                 </span>
               )}
               {busyState && e.note && <span className="card-note">{e.note}</span>}
@@ -1639,6 +1676,17 @@ export default function App() {
                   )}
                 </span>
               )}
+              {detail.status !== "ready" && detail.status !== "failed" && detail.progress && (
+                <>
+                  <p className="now-note">
+                    {STAGE_LABEL[detail.progress.stage] ?? detail.progress.stage} · {detail.progress.percent}%
+                    {detail.progress.etaSeconds !== null ? ` · ~${etaLabel(detail.progress.etaSeconds)} left` : ""}
+                  </p>
+                  <span className="card-progress building" aria-hidden="true">
+                    <span style={{ width: `${detail.progress.percent}%` }} />
+                  </span>
+                </>
+              )}
               {detail.status !== "ready" && detail.status !== "failed" && detail.note && (
                 <p className="now-note">{detail.note}</p>
               )}
@@ -1793,7 +1841,7 @@ export default function App() {
                           className={`seg ${s.speaker.toLowerCase()}${active ? " active" : ""}`}
                           onClick={() => seekToMs(s.startMs ?? 0)}
                         >
-                          <span className="seg-who">{s.speaker === "HOST" ? "Maya" : "Sam"}</span>
+                          <span className="seg-who">{SPEAKER_NAMES[s.speaker] ?? s.speaker}</span>
                           <span className="seg-text">{s.text}</span>
                           <span className="seg-ts">{mmss(s.startMs ?? 0)}</span>
                         </li>

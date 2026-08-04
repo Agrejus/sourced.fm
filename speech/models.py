@@ -10,10 +10,41 @@ torch_dtype=float16 and
 attn_implementation="sdpa" (FlashAttention 2 has no Turing kernels). The fork's
 CUDA default is bfloat16 + flash_attention_2, so we pass these explicitly.
 
-Voice prompt wavs shipped in speech/voices/ were copied from the
-vibevoice-community/VibeVoice fork demo voices:
-  host.wav   <- demo/voices/en-Alice_woman.wav  (female, HOST / Speaker 1)
-  expert.wav <- demo/voices/en-Frank_man.wav    (male,   EXPERT / Speaker 2)
+Voice prompt wavs in speech/voices/:
+  host.wav   <- fork demo/voices/en-Alice_woman.wav  (female, HOST — Maya)
+  expert.wav <- fork demo/voices/en-Frank_man.wav    (male,   EXPERT — Sam)
+  critic.wav <- fork demo/voices/in-Samuel_man.wav   (male,   CRITIC — Theo)
+
+All three are vibevoice-community/VibeVoice demo clips. Samuel was chosen by ear
+over a deeper American alternative (Kokoro am_onyx, still reproducible via
+make_critic_voice.py): it reads as more inquisitive, which is CRITIC's whole job.
+Its Indian-English accent is deliberate.
+
+HOST/EXPERT/CRITIC is the canonical order, but the 'Speaker N' number each one
+gets depends on who appears in the script — see _speaker_numbering.
+
+EXPERT and CRITIC are both male, so their rendered pitches must not converge or
+the listener hears one person arguing with himself. Use pitch (median F0) to
+judge that, and nothing else. Two things that look like better measures are not:
+
+- **Reference-clip similarity does not predict the render.** Measured 2026-08-04:
+  two candidate references 3.4x apart in spectral distance rendered
+  indistinguishably from each other (0.0425 vs 0.0426 against Frank).
+- **Spectral/timbre distance between rendered speakers is unreliable.** In the
+  same test Maya scored *closer* to Sam than the critic did, which is plainly
+  false — she is female and 60 Hz away. It tracks content and run-to-run
+  variance more than speaker identity.
+
+Measured separation from Frank across full episodes: Samuel ~4 Hz, am_onyx
+~11-26 Hz. Samuel is the weaker pairing on that metric and was kept anyway,
+because character won over separation. Note that turn structure carries a lot of
+the load — CRITIC asks short questions, EXPERT gives long answers — so listeners
+have a strong cue beyond timbre. The fork's en-Carter_man.wav remains rejected
+for rendering 2.6 Hz from Frank, which is the same voice twice.
+
+Verify any replacement by rendering a real multi-minute excerpt and listening; a
+60-second smoke test overstates separation badly (Samuel measured 16.8 Hz on 61
+seconds and 4.1 Hz across a full hour).
 """
 
 from __future__ import annotations
@@ -42,8 +73,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 VOICE_BY_SPEAKER = {
     "HOST": os.path.join(_HERE, "voices", "host.wav"),
     "EXPERT": os.path.join(_HERE, "voices", "expert.wav"),
+    "CRITIC": os.path.join(_HERE, "voices", "critic.wav"),
 }
-SPEAKER_NUMBER = {"HOST": 1, "EXPERT": 2}
+# Canonical speaker order. Numbering is derived from this and from which
+# speakers a script actually uses (see _speaker_numbering) rather than fixed per
+# name, so it is never out of step with the voice list.
+SPEAKER_ORDER = tuple(VOICE_BY_SPEAKER)
 
 _whisper = None
 _kokoro = None
@@ -80,26 +115,57 @@ def warmup() -> None:
     get_kokoro()
 
 
+def _speaker_numbering(segments: Sequence[dict]) -> dict:
+    """Dense 'Speaker N' numbers over the speakers this script actually uses, in
+    SPEAKER_ORDER.
+
+    The processor pairs voice_samples[i] with the 'Speaker i+1:' label, so the
+    numbers must run 1..N with no gaps. Numbering each speaker by a fixed number
+    breaks that as soon as one is absent: a HOST+CRITIC script would ask for
+    Speaker 1 and Speaker 3 while supplying two voices, and the second voice
+    would be read as Speaker 2 — leaving every CRITIC line unvoiced. Deriving
+    both the labels and the voice list from this one mapping keeps them in
+    lockstep however many speakers appear.
+    """
+    present = [name for name in SPEAKER_ORDER if any(seg["speaker"] == name for seg in segments)]
+    return {name: i + 1 for i, name in enumerate(present)}
+
+
 def to_vibevoice_script(segments: Sequence[dict]) -> str:
-    """HOST -> 'Speaker 1:', EXPERT -> 'Speaker 2:', one line per segment."""
+    """One 'Speaker N: text' line per segment, N per _speaker_numbering."""
+    numbering = _speaker_numbering(segments)
     lines = []
     for seg in segments:
-        number = SPEAKER_NUMBER[seg["speaker"]]
+        number = numbering[seg["speaker"]]
         lines.append(f"Speaker {number}: {seg['text']}")
     return "\n".join(lines)
 
 
 def _voice_samples_for(segments: Sequence[dict]) -> List[str]:
-    """One reference wav per speaker number present, in ascending number order
-    (matches the 'Speaker N:' labels the processor pairs voices with)."""
-    numbers = sorted({SPEAKER_NUMBER[seg["speaker"]] for seg in segments})
-    number_to_voice = {SPEAKER_NUMBER[name]: path for name, path in VOICE_BY_SPEAKER.items()}
-    return [number_to_voice[n] for n in numbers]
+    """One reference wav per speaker present, ordered to match the labels
+    to_vibevoice_script emits."""
+    numbering = _speaker_numbering(segments)
+    return [VOICE_BY_SPEAKER[name] for name in sorted(numbering, key=lambda n: numbering[n])]
 
 
 def _whisper_words(wav_path: str) -> List[Tuple[str, float]]:
+    """Word timestamps for forced alignment.
+
+    vad_filter and condition_on_previous_text=False are not tuning knobs, they
+    decide whether alignment works at all. On defaults, an hour-long render came
+    back with 6,582 words against 12,247 actually spoken (54%) — the decoder
+    conditions on its own previous output, loops, and skips ahead — and no
+    aligner can match a script to half its words, so every episode silently fell
+    back to character-proportional timestamps. With these two options the same
+    audio yields 11,519 words (94%) and aligns for real, in less wall-clock time.
+    (Measured on a 59.4-minute episode, 2026-08-03.)
+    """
     segments_gen, _info = get_whisper().transcribe(
-        wav_path, language="en", word_timestamps=True
+        wav_path,
+        language="en",
+        word_timestamps=True,
+        vad_filter=True,
+        condition_on_previous_text=False,
     )
     words: List[Tuple[str, float]] = []
     for seg in segments_gen:

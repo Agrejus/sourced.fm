@@ -1,5 +1,9 @@
-"""M1 smoke test: POST a 6-segment two-speaker script to /tts/episode, assert
+"""M1 smoke test: POST an 8-segment three-speaker script to /tts/episode, assert
 the mp3 exists, durationMs > 0, and segmentStartMs is monotonic.
+
+All three speakers appear, so this also covers the voice pairing: HOST, EXPERT
+and CRITIC must come out as three audibly different people, and CRITIC's lines
+must be voiced at all (see _speaker_numbering in models.py).
 
 Run against a running speech service:
   SPEECH_URL=http://localhost:7910 DATA_DIR=./data python3 smoke_episode.py
@@ -15,12 +19,14 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 EPISODE_ID = "smoke"
 
 SEGMENTS = [
-    {"idx": 0, "speaker": "HOST", "text": "Here's something worth your next ten minutes. Why do bridges hum in the wind?"},
+    {"idx": 0, "speaker": "HOST", "text": "Here's something worth your next ten minutes. Why do bridges hum in the wind? Sam, start us off."},
     {"idx": 1, "speaker": "EXPERT", "text": "It comes down to vortex shedding. Wind peels off the cables in little swirls, and those swirls push back and forth."},
-    {"idx": 2, "speaker": "HOST", "text": "So the bridge is basically a giant instrument being played by the air?"},
-    {"idx": 3, "speaker": "EXPERT", "text": "Exactly. When the pushing lines up with the bridge's natural rhythm, the motion grows. Engineers add dampers to break that up."},
-    {"idx": 4, "speaker": "HOST", "text": "That's the part I never knew. It's not random, it's a resonance they have to design against."},
-    {"idx": 5, "speaker": "EXPERT", "text": "Right. Three takeaways: wind makes swirls, swirls can match the bridge's rhythm, and dampers keep that from running away."},
+    {"idx": 2, "speaker": "CRITIC", "text": "That's the label, not the mechanism. Walk me through what actually happens to the deck, step by step."},
+    {"idx": 3, "speaker": "EXPERT", "text": "Fair. Each swirl gives the deck a small sideways shove. The shoves arrive at a steady beat, and if that beat matches how fast the deck already wants to sway, every shove adds to the last one."},
+    {"idx": 4, "speaker": "CRITIC", "text": "So what breaks if you ignore it? Give me the failure case, not the theory."},
+    {"idx": 5, "speaker": "EXPERT", "text": "The motion keeps growing instead of settling. That's how a deck can tear itself apart in a wind far below what the structure was rated for."},
+    {"idx": 6, "speaker": "HOST", "text": "Okay, that's the part I never knew. It isn't random weather, it's a rhythm they have to design against."},
+    {"idx": 7, "speaker": "EXPERT", "text": "Right. Three takeaways: wind makes swirls, swirls can match the bridge's rhythm, and dampers keep that from running away."},
 ]
 
 
